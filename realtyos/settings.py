@@ -41,7 +41,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'drf_spectacular',
     'users',
-    'agencies'
+    'agencies',
+    'properties'
 ]
 
 MIDDLEWARE = [
