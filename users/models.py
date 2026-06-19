@@ -1,5 +1,11 @@
-from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
+from django.contrib.auth.models import (
+    AbstractBaseUser,
+    PermissionsMixin,
+    BaseUserManager
+)
 from django.db import models
+
+from agencies.models import Agency
 
 
 class AgencyUserManager(BaseUserManager):
@@ -9,7 +15,11 @@ class AgencyUserManager(BaseUserManager):
 
         email = self.normalize_email(email)
 
-        user = self.model(email=email, **extra_fields)
+        user = self.model(
+            email=email,
+            **extra_fields
+        )
+
         user.set_password(password)
         user.save(using=self._db)
 
@@ -20,13 +30,30 @@ class AgencyUserManager(BaseUserManager):
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
 
-        return self.create_user(email, password, **extra_fields)
+        return self.create_user(
+            email,
+            password,
+            **extra_fields
+        )
 
 
 class AgencyUser(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
-    agency_name = models.CharField(max_length=255)
-    agency_license_number = models.CharField(max_length=100, unique=True)
+
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name="users",
+        null=True,
+        blank=True
+    )
+
+    full_name = models.CharField(max_length=255)
+
+    role = models.CharField(
+        max_length=50,
+        default="agency_owner"
+    )
 
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
@@ -36,7 +63,7 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
     objects = AgencyUserManager()
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["agency_name", "agency_license_number"]
+    REQUIRED_FIELDS = ["full_name"]
 
     def __str__(self):
-        return self.agency_name
+        return self.email
