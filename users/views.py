@@ -26,9 +26,33 @@ User = get_user_model()
         )
     ]
 )
-class RegisterView(generics.CreateAPIView):
+# users/views.py
+
+class RegisterView(APIView):
     serializer_class = RegisterSerializer
 
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        return Response(
+            {
+                "message": "Agency registered successfully.",
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "full_name": user.full_name,
+                    "role": user.role,
+                },
+                "agency": {
+                    "id": user.agency.id,
+                    "name": user.agency.name,
+                    "license_number": user.agency.license_number,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
 @extend_schema(
     summary="Login",
     request={
