@@ -77,3 +77,51 @@ class Property(models.Model):
 
     def __str__(self):
         return self.title
+    
+
+class PropertyMedia(models.Model):
+    MEDIA_TYPES = [
+        ("image", "Image"),
+        ("video", "Video"),
+        ("reel", "Reel"),
+        ("brochure", "Brochure"),
+        ("floor_plan", "Floor Plan"),
+        ("document", "Document"),
+    ]
+
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name="property_media"
+    )
+
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.CASCADE,
+        related_name="media"
+    )
+
+    media_type = models.CharField(
+        max_length=50,
+        choices=MEDIA_TYPES,
+        default="image"
+    )
+
+    file = models.FileField(upload_to="property_media/")
+
+    thumbnail = models.ImageField(
+        upload_to="property_media/thumbnails/",
+        null=True,
+        blank=True
+    )
+
+    title = models.CharField(max_length=255, blank=True)
+    caption = models.TextField(blank=True)
+
+    sort_order = models.PositiveIntegerField(default=0)
+    is_primary = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.property.title} - {self.media_type}"
