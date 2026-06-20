@@ -10,3 +10,4 @@ typing_extensions==4.15.0
 tzdata==2026.2
 djangorestframework-simplejwt
 drf_spectacular
+Pillow
