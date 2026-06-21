@@ -79,7 +79,6 @@ class AgentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-
 class AgentCreateSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
@@ -105,3 +104,6 @@ class AgentCreateSerializer(serializers.Serializer):
             agency=request.user.agency,
             role="agent",
         )
+
+    def to_representation(self, instance):
+        return AgentSerializer(instance).data
