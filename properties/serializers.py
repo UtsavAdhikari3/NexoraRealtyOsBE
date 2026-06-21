@@ -7,16 +7,25 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
         model = PropertyMedia
         fields = [
             "id",
+            "property",
             "media_type",
             "file",
+            "external_url",
             "thumbnail",
             "title",
             "caption",
             "sort_order",
             "is_primary",
+            "uploaded_by",
             "created_at",
         ]
 
+        read_only_fields = [
+            "id",
+            "property",
+            "uploaded_by",
+            "created_at",
+        ]
 
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)

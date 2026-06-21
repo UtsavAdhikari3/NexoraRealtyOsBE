@@ -59,7 +59,8 @@ class PropertyMediaListCreateView(generics.ListCreateAPIView):
 
         serializer.save(
             agency=self.request.user.agency,
-            property=property_obj
+            property=property_obj,
+            uploaded_by=self.request.user,
         )
 
 
