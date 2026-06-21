@@ -5,8 +5,14 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import IsAuthenticated, BasePermission
 
-from .serializers import RegisterSerializer, LoginResponseSerializer
+from .serializers import (
+    RegisterSerializer,
+    LoginResponseSerializer,
+    AgentSerializer,
+    AgentCreateSerializer,
+)
 
 User = get_user_model()
 
@@ -113,3 +119,41 @@ class LoginView(APIView):
                 },
             }
         )
+    
+class IsAgencyOwnerOrManager(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in ["agency_owner", "agency_manager"]
+        )
+    
+class AgentListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsAgencyOwnerOrManager]
+
+    def get_queryset(self):
+        return User.objects.filter(
+            agency=self.request.user.agency,
+            role="agent",
+        ).order_by("-created_at")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return AgentCreateSerializer
+
+        return AgentSerializer
+
+
+class AgentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = AgentSerializer
+    permission_classes = [IsAuthenticated, IsAgencyOwnerOrManager]
+
+    def get_queryset(self):
+        return User.objects.filter(
+            agency=self.request.user.agency,
+            role="agent",
+        )
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=["is_active"])

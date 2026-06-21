@@ -65,3 +65,45 @@ class LoginResponseSerializer(serializers.Serializer):
 
     user = serializers.DictField()
     agency = serializers.DictField()
+
+
+class AgentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "full_name",
+            "role",
+            "is_active",
+            "created_at",
+        ]
+
+class AgentCreateSerializer(serializers.Serializer):
+    full_name = serializers.CharField(max_length=255)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_email(self, value):
+        value = value.lower().strip()
+
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError(
+                "User with this email already exists."
+            )
+
+        return value
+
+    def create(self, validated_data):
+        request = self.context["request"]
+
+        return User.objects.create_user(
+            email=validated_data["email"],
+            password=validated_data["password"],
+            full_name=validated_data["full_name"],
+            agency=request.user.agency,
+            role="agent",
+        )
+
+    def to_representation(self, instance):
+        return AgentSerializer(instance).data

@@ -211,3 +211,93 @@ class PropertyMediaAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+class PropertyAgentAssignmentAPITestCase(APITestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(
+            name="Nexora Realty",
+            license_number="NR-001",
+        )
+
+        self.owner = User.objects.create_user(
+            email="owner@nexora.com",
+            password="Password123",
+            full_name="Agency Owner",
+            agency=self.agency,
+            role="agency_owner",
+        )
+
+        self.agent = User.objects.create_user(
+            email="agent@nexora.com",
+            password="Password123",
+            full_name="Agent User",
+            agency=self.agency,
+            role="agent",
+        )
+
+        self.property = Property.objects.create(
+            agency=self.agency,
+            title="3 BHK House in Kathmandu",
+            property_type="house",
+            purpose="sale",
+            price=15000000,
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            address="Budhanilkantha",
+            bedrooms=3,
+            bathrooms=2,
+            description="Beautiful family home.",
+            status="available",
+        )
+
+        self.client.force_authenticate(user=self.owner)
+
+    def test_owner_can_assign_property_to_agent(self):
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.property.id}
+        )
+
+        payload = {
+            "assigned_agent": self.agent.id
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.property.refresh_from_db()
+
+        self.assertEqual(self.property.assigned_agent, self.agent)
+
+    def test_owner_cannot_assign_property_to_agent_from_other_agency(self):
+        other_agency = Agency.objects.create(
+            name="Other Realty",
+            license_number="OR-001",
+        )
+
+        other_agent = User.objects.create_user(
+            email="other.agent@nexora.com",
+            password="Password123",
+            full_name="Other Agent",
+            agency=other_agency,
+            role="agent",
+        )
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.property.id}
+        )
+
+        payload = {
+            "assigned_agent": other_agent.id
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.property.refresh_from_db()
+
+        self.assertIsNone(self.property.assigned_agent)
