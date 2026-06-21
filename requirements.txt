@@ -11,3 +11,4 @@ tzdata==2026.2
 djangorestframework-simplejwt
 drf_spectacular
 Pillow
+django-cors-headers
