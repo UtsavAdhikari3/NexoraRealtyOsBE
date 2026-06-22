@@ -4,25 +4,159 @@ from rest_framework.permissions import IsAuthenticated
 from .models import Property,PropertyMedia
 from .serializers import PropertySerializer, PropertyMediaSerializer
 from django.shortcuts import get_object_or_404
+from django.db.models import Q
+from rest_framework.views import APIView
+from rest_framework.response import Response
+
+from users.models import AgencyUser
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 
 
-
-class PropertyListCreateView(
-    generics.ListCreateAPIView
-):
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            name="property_type",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Filter by property type. Example: house, land, apartment, flat, commercial, office_space"
+        ),
+        OpenApiParameter(
+            name="status",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Filter by property status. Example: draft, available, sold, rented, hidden, archived"
+        ),
+        OpenApiParameter(
+            name="location",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Search location across province, district, city, neighbourhood, and address"
+        ),
+        OpenApiParameter(
+            name="assigned_agent",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Filter by assigned agent ID, or use 'unassigned'"
+        ),
+    ]
+)
+class PropertyListCreateView(generics.ListCreateAPIView):
+    serializer_class = PropertySerializer
+    permission_classes = [IsAuthenticated]
+class PropertyListCreateView(generics.ListCreateAPIView):
     serializer_class = PropertySerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Property.objects.filter(
+        queryset = Property.objects.filter(
             agency=self.request.user.agency
-        )
+        ).select_related(
+            "assigned_agent",
+            "agency"
+        ).prefetch_related(
+            "media"
+        ).order_by("-created_at")
+
+        property_type = self.request.query_params.get("property_type")
+        status_value = self.request.query_params.get("status")
+        location = self.request.query_params.get("location")
+        assigned_agent = self.request.query_params.get("assigned_agent")
+
+        if property_type and property_type != "all":
+            queryset = queryset.filter(property_type=property_type)
+
+        if status_value and status_value != "all":
+            queryset = queryset.filter(status=status_value)
+
+        if location and location != "all":
+            queryset = queryset.filter(
+                Q(province__icontains=location)
+                | Q(district__icontains=location)
+                | Q(city__icontains=location)
+                | Q(neighbourhood__icontains=location)
+                | Q(address__icontains=location)
+            )
+
+        if assigned_agent and assigned_agent != "all":
+            if assigned_agent == "unassigned":
+                queryset = queryset.filter(assigned_agent__isnull=True)
+            else:
+                queryset = queryset.filter(assigned_agent_id=assigned_agent)
+
+        return queryset
 
     def perform_create(self, serializer):
         serializer.save(
             agency=self.request.user.agency
         )
 
+
+class PropertyFilterOptionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agency = request.user.agency
+
+        locations = Property.objects.filter(
+            agency=agency
+        ).exclude(
+            city=""
+        ).values_list(
+            "city",
+            flat=True
+        ).distinct().order_by("city")
+
+        agents = AgencyUser.objects.filter(
+            agency=agency,
+            role="agent",
+            is_active=True
+        ).order_by("full_name")
+
+        return Response(
+            {
+                "property_types": [
+                    {
+                        "value": value,
+                        "label": label
+                    }
+                    for value, label in Property.PROPERTY_TYPES
+                ],
+
+                "statuses": [
+                    {
+                        "value": value,
+                        "label": label
+                    }
+                    for value, label in Property.STATUS_CHOICES
+                ],
+
+                "locations": [
+                    {
+                        "value": location,
+                        "label": location
+                    }
+                    for location in locations
+                ],
+
+                "agents": [
+                    {
+                        "value": agent.id,
+                        "label": agent.full_name
+                    }
+                    for agent in agents
+                ] + [
+                    {
+                        "value": "unassigned",
+                        "label": "Unassigned"
+                    }
+                ],
+            }
+        )
 
 class PropertyDetailView(
     generics.RetrieveUpdateDestroyAPIView
