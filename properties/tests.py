@@ -301,3 +301,268 @@ class PropertyAgentAssignmentAPITestCase(APITestCase):
         self.property.refresh_from_db()
 
         self.assertIsNone(self.property.assigned_agent)
+
+class PropertyFilterAPITestCase(APITestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(
+            name="Nexora Realty",
+            license_number="NR-001",
+        )
+
+        self.owner = User.objects.create_user(
+            email="owner.filters@nexora.com",
+            password="Password123",
+            full_name="Agency Owner",
+            agency=self.agency,
+            role="agency_owner",
+        )
+
+        self.agent = User.objects.create_user(
+            email="agent.filters@nexora.com",
+            password="Password123",
+            full_name="Ram Agent",
+            agency=self.agency,
+            role="agent",
+        )
+
+        self.house = Property.objects.create(
+            agency=self.agency,
+            assigned_agent=self.agent,
+            title="Modern House in Kathmandu",
+            property_type="house",
+            purpose="sale",
+            price=15000000,
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            neighbourhood="Milan Chowk",
+            address="House no. 24",
+            bedrooms=3,
+            bathrooms=2,
+            description="Beautiful house.",
+            status="available",
+        )
+
+        self.land = Property.objects.create(
+            agency=self.agency,
+            title="Land in Bhaktapur",
+            property_type="land",
+            purpose="sale",
+            price=8000000,
+            province="Bagmati",
+            district="Bhaktapur",
+            city="Bhaktapur",
+            neighbourhood="Suryabinayak",
+            address="Near main road",
+            bedrooms=0,
+            bathrooms=0,
+            description="Good land.",
+            status="draft",
+        )
+
+        self.apartment = Property.objects.create(
+            agency=self.agency,
+            title="Apartment in Lalitpur",
+            property_type="apartment",
+            purpose="rent",
+            price=50000,
+            province="Bagmati",
+            district="Lalitpur",
+            city="Lalitpur",
+            neighbourhood="Jawalakhel",
+            address="Near zoo",
+            bedrooms=2,
+            bathrooms=1,
+            description="Nice apartment.",
+            status="available",
+        )
+
+        other_agency = Agency.objects.create(
+            name="Other Realty",
+            license_number="OR-FILTER-001",
+        )
+
+        Property.objects.create(
+            agency=other_agency,
+            title="Other Agency House",
+            property_type="house",
+            purpose="sale",
+            price=10000000,
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            neighbourhood="Other Area",
+            address="Other address",
+            bedrooms=3,
+            bathrooms=2,
+            description="Should not be visible.",
+            status="available",
+        )
+
+        self.client.force_authenticate(user=self.owner)
+
+    def get_results(self, response):
+        if isinstance(response.data, dict) and "results" in response.data:
+            return response.data["results"]
+
+        return response.data
+
+    def test_filter_by_property_type(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "property_type": "house"
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], self.house.id)
+        self.assertEqual(results[0]["property_type"], "house")
+
+    def test_filter_by_status(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "status": "draft"
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], self.land.id)
+        self.assertEqual(results[0]["status"], "draft")
+
+    def test_filter_by_location_city(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "location": "Bhaktapur"
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], self.land.id)
+
+    def test_filter_by_location_neighbourhood(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "location": "Milan Chowk"
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], self.house.id)
+
+    def test_filter_by_assigned_agent(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "assigned_agent": self.agent.id
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], self.house.id)
+        self.assertEqual(results[0]["assigned_agent"], self.agent.id)
+
+    def test_filter_by_unassigned_agent(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "assigned_agent": "unassigned"
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        result_ids = [
+            item["id"]
+            for item in results
+        ]
+
+        self.assertIn(self.land.id, result_ids)
+        self.assertIn(self.apartment.id, result_ids)
+        self.assertNotIn(self.house.id, result_ids)
+
+    def test_filter_options_returns_property_types_statuses_locations_and_agents(self):
+        url = reverse("property-filter-options")
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertIn("property_types", response.data)
+        self.assertIn("statuses", response.data)
+        self.assertIn("locations", response.data)
+        self.assertIn("agents", response.data)
+
+        location_values = [
+            location["value"]
+            for location in response.data["locations"]
+        ]
+
+        self.assertIn("Bagmati", location_values)
+        self.assertIn("Kathmandu", location_values)
+        self.assertIn("Bhaktapur", location_values)
+        self.assertIn("Lalitpur", location_values)
+        self.assertIn("Milan Chowk", location_values)
+        self.assertIn("Suryabinayak", location_values)
+        self.assertIn("Jawalakhel", location_values)
+
+        agent_values = [
+            agent["value"]
+            for agent in response.data["agents"]
+        ]
+
+        self.assertIn(self.agent.id, agent_values)
+        self.assertIn("unassigned", agent_values)
+
+    def test_invalid_assigned_agent_filter_returns_empty_list(self):
+        url = reverse("property-list")
+
+        response = self.client.get(
+            url,
+            {
+                "assigned_agent": "abc"
+            }
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        results = self.get_results(response)
+
+        self.assertEqual(len(results), 0)
