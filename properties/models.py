@@ -35,6 +35,7 @@ class Property(models.Model):
         ("ropani", "Ropani"),
         ("kattha", "Kattha"),
         ("dhur", "Dhur"),
+        ("bigha","Bigha"),
         ("sqft", "Square Feet"),
         ("sqm", "Square Meter"),
     ]

@@ -30,10 +30,30 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)
 
+    assigned_agent_name = serializers.SerializerMethodField()
+    assigned_agent_detail = serializers.SerializerMethodField()
+
     class Meta:
         model = Property
         fields = "__all__"
         read_only_fields = ("agency",)
+
+    def get_assigned_agent_name(self, obj):
+        if obj.assigned_agent:
+            return obj.assigned_agent.full_name
+
+        return None
+
+    def get_assigned_agent_detail(self, obj):
+        if not obj.assigned_agent:
+            return None
+
+        return {
+            "id": obj.assigned_agent.id,
+            "full_name": obj.assigned_agent.full_name,
+            "email": obj.assigned_agent.email,
+            "role": obj.assigned_agent.role,
+        }
 
     def validate_assigned_agent(self, value):
         request = self.context["request"]

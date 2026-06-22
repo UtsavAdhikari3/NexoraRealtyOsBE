@@ -5,11 +5,26 @@ from .views import (
     PropertyDetailView,
     PropertyMediaListCreateView,
     PropertyMediaDetailView,
+    PropertyFilterOptionsView,
 )
-
 urlpatterns = [
-    path("", PropertyListCreateView.as_view(), name="property-list"),
-    path("<int:pk>/", PropertyDetailView.as_view(), name="property-detail"),
+    path(
+        "",
+        PropertyListCreateView.as_view(),
+        name="property-list"
+    ),
+
+    path(
+        "filter-options/",
+        PropertyFilterOptionsView.as_view(),
+        name="property-filter-options"
+    ),
+
+    path(
+        "<int:pk>/",
+        PropertyDetailView.as_view(),
+        name="property-detail"
+    ),
 
     path(
         "<int:property_id>/media/",
