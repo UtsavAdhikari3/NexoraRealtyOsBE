@@ -29,6 +29,8 @@ class AgencyUserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
+        extra_fields.setdefault("role", "super_admin")
+        extra_fields.setdefault("agency", None)
 
         return self.create_user(
             email,
@@ -38,6 +40,18 @@ class AgencyUserManager(BaseUserManager):
 
 
 class AgencyUser(AbstractBaseUser, PermissionsMixin):
+    ROLE_SUPER_ADMIN = "super_admin"
+    ROLE_AGENCY_OWNER = "agency_owner"
+    ROLE_AGENCY_MANAGER = "agency_manager"
+    ROLE_AGENT = "agent"
+
+    ROLE_CHOICES = [
+        (ROLE_SUPER_ADMIN, "Super Admin"),
+        (ROLE_AGENCY_OWNER, "Agency Owner"),
+        (ROLE_AGENCY_MANAGER, "Agency Manager"),
+        (ROLE_AGENT, "Agent"),
+    ]
+
     email = models.EmailField(unique=True)
 
     agency = models.ForeignKey(
@@ -52,7 +66,8 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
 
     role = models.CharField(
         max_length=50,
-        default="agency_owner"
+        choices=ROLE_CHOICES,
+        default=ROLE_AGENCY_OWNER
     )
 
     is_active = models.BooleanField(default=True)
