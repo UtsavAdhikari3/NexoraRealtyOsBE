@@ -566,3 +566,247 @@ class PropertyFilterAPITestCase(APITestCase):
         results = self.get_results(response)
 
         self.assertEqual(len(results), 0)
+
+class PropertyRolePermissionAPITestCase(APITestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(
+            name="Nexora Realty",
+            license_number="NR-ROLE-001",
+        )
+
+        self.owner = User.objects.create_user(
+            email="owner.role@nexora.com",
+            password="Password123",
+            full_name="Agency Owner",
+            agency=self.agency,
+            role="agency_owner",
+        )
+
+        self.manager = User.objects.create_user(
+            email="manager.role@nexora.com",
+            password="Password123",
+            full_name="Agency Manager",
+            agency=self.agency,
+            role="agency_manager",
+        )
+
+        self.agent = User.objects.create_user(
+            email="agent.role@nexora.com",
+            password="Password123",
+            full_name="Agent User",
+            agency=self.agency,
+            role="agent",
+        )
+
+        self.other_agent = User.objects.create_user(
+            email="other.agent.role@nexora.com",
+            password="Password123",
+            full_name="Other Agent",
+            agency=self.agency,
+            role="agent",
+        )
+
+        self.assigned_property = Property.objects.create(
+            agency=self.agency,
+            assigned_agent=self.agent,
+            title="Assigned House",
+            property_type="house",
+            purpose="sale",
+            price=15000000,
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            address="Assigned address",
+            bedrooms=3,
+            bathrooms=2,
+            description="Assigned property.",
+            status="available",
+            is_published=True,
+        )
+
+        self.unassigned_property = Property.objects.create(
+            agency=self.agency,
+            title="Unassigned Land",
+            property_type="land",
+            purpose="sale",
+            price=8000000,
+            province="Bagmati",
+            district="Bhaktapur",
+            city="Bhaktapur",
+            address="Unassigned address",
+            bedrooms=0,
+            bathrooms=0,
+            description="Unassigned property.",
+            status="draft",
+            is_published=False,
+        )
+
+    def test_agent_can_view_agency_properties(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse("property-list")
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_agent_can_edit_assigned_property_allowed_field(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.assigned_property.id}
+        )
+
+        payload = {
+            "description": "Updated by assigned agent."
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assigned_property.refresh_from_db()
+
+        self.assertEqual(
+            self.assigned_property.description,
+            "Updated by assigned agent."
+        )
+
+    def test_agent_cannot_edit_unassigned_property(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.unassigned_property.id}
+        )
+
+        payload = {
+            "description": "Trying to update unassigned property."
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_agent_cannot_publish_assigned_property(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.assigned_property.id}
+        )
+
+        payload = {
+            "is_published": True,
+            "status": "available",
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_agent_cannot_assign_property_to_other_agent(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.assigned_property.id}
+        )
+
+        payload = {
+            "assigned_agent": self.other_agent.id
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_agent_cannot_delete_property(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.assigned_property.id}
+        )
+
+        response = self.client.delete(url)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.assertTrue(
+            Property.objects.filter(
+                id=self.assigned_property.id
+            ).exists()
+        )
+
+    def test_owner_can_delete_property(self):
+        self.client.force_authenticate(user=self.owner)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.unassigned_property.id}
+        )
+
+        response = self.client.delete(url)
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_manager_can_update_any_agency_property(self):
+        self.client.force_authenticate(user=self.manager)
+
+        url = reverse(
+            "property-detail",
+            kwargs={"pk": self.unassigned_property.id}
+        )
+
+        payload = {
+            "description": "Updated by manager."
+        }
+
+        response = self.client.patch(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.unassigned_property.refresh_from_db()
+
+        self.assertEqual(
+            self.unassigned_property.description,
+            "Updated by manager."
+        )
+
+    def test_agent_created_property_is_forced_to_draft_and_assigned_to_self(self):
+        self.client.force_authenticate(user=self.agent)
+
+        url = reverse("property-list")
+
+        payload = {
+            "title": "Agent Created Property",
+            "property_type": "house",
+            "purpose": "sale",
+            "price": "12000000.00",
+            "province": "Bagmati",
+            "district": "Kathmandu",
+            "city": "Kathmandu",
+            "address": "Agent address",
+            "bedrooms": 2,
+            "bathrooms": 1,
+            "description": "Created by agent.",
+            "status": "available",
+            "is_published": True,
+            "is_featured": True,
+            "assigned_agent": self.other_agent.id,
+        }
+
+        response = self.client.post(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        created_property = Property.objects.get(
+            title="Agent Created Property"
+        )
+
+        self.assertEqual(created_property.assigned_agent, self.agent)
+        self.assertEqual(created_property.status, "draft")
+        self.assertFalse(created_property.is_published)
+        self.assertFalse(created_property.is_featured)

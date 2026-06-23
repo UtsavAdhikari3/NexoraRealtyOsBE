@@ -1,11 +1,14 @@
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-
+from rest_framework.exceptions import PermissionDenied
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.response import Response
-
+from users.permissions import (
+    is_agency_owner_or_manager,
+    is_agent,
+)
 from drf_spectacular.utils import (
     extend_schema,
     extend_schema_view,
@@ -48,7 +51,45 @@ PROPERTY_FILTER_PARAMETERS = [
         description="Filter by assigned agent ID, or use 'unassigned'",
     ),
 ]
+AGENT_BLOCKED_PROPERTY_FIELDS = {
+    "agency",
+    "assigned_agent",
+    "status",
+    "is_published",
+    "is_featured",
+    "published_at",
+}
 
+
+def can_manage_any_property(user):
+    return is_agency_owner_or_manager(user)
+
+
+def can_agent_manage_property(user, property_obj):
+    return (
+        is_agent(user)
+        and property_obj.assigned_agent_id == user.id
+    )
+
+
+def can_manage_property(user, property_obj):
+    return (
+        can_manage_any_property(user)
+        or can_agent_manage_property(user, property_obj)
+    )
+
+
+def validate_agent_property_update(request):
+    blocked_fields = AGENT_BLOCKED_PROPERTY_FIELDS.intersection(
+        set(request.data.keys())
+    )
+
+    if blocked_fields:
+        blocked_list = ", ".join(sorted(blocked_fields))
+
+        raise PermissionDenied(
+            f"Agents cannot update these fields: {blocked_list}"
+        )
 
 @extend_schema_view(
     get=extend_schema(parameters=PROPERTY_FILTER_PARAMETERS)
@@ -98,8 +139,26 @@ class PropertyListCreateView(generics.ListCreateAPIView):
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save(
-            agency=self.request.user.agency
+        user = self.request.user
+
+        if is_agency_owner_or_manager(user):
+            serializer.save(
+                agency=user.agency
+            )
+            return
+
+        if is_agent(user):
+            serializer.save(
+                agency=user.agency,
+                assigned_agent=user,
+                status="draft",
+                is_published=False,
+                is_featured=False,
+            )
+            return
+
+        raise PermissionDenied(
+            "You do not have permission to create properties."
         )
 
 
@@ -210,6 +269,43 @@ class PropertyDetailView(generics.RetrieveUpdateDestroyAPIView):
             "media"
         )
 
+    def update(self, request, *args, **kwargs):
+        property_obj = self.get_object()
+        user = request.user
+
+        if is_agency_owner_or_manager(user):
+            return super().update(request, *args, **kwargs)
+
+        if can_agent_manage_property(user, property_obj):
+            validate_agent_property_update(request)
+            return super().update(request, *args, **kwargs)
+
+        raise PermissionDenied(
+            "You do not have permission to update this property."
+        )
+
+    def partial_update(self, request, *args, **kwargs):
+        property_obj = self.get_object()
+        user = request.user
+
+        if is_agency_owner_or_manager(user):
+            return super().partial_update(request, *args, **kwargs)
+
+        if can_agent_manage_property(user, property_obj):
+            validate_agent_property_update(request)
+            return super().partial_update(request, *args, **kwargs)
+
+        raise PermissionDenied(
+            "You do not have permission to update this property."
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        if is_agency_owner_or_manager(request.user):
+            return super().destroy(request, *args, **kwargs)
+
+        raise PermissionDenied(
+            "Only agency owners or managers can delete properties."
+        )
 
 class PropertyMediaListCreateView(generics.ListCreateAPIView):
     serializer_class = PropertyMediaSerializer
@@ -233,6 +329,11 @@ class PropertyMediaListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         property_obj = self.get_property()
 
+        if not can_manage_property(self.request.user, property_obj):
+            raise PermissionDenied(
+                "You do not have permission to upload media for this property."
+            )
+
         serializer.save(
             agency=self.request.user.agency,
             property=property_obj,
@@ -247,4 +348,38 @@ class PropertyMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         return PropertyMedia.objects.filter(
             agency=self.request.user.agency
+        ).select_related(
+            "property",
+            "agency",
+            "uploaded_by",
         )
+
+    def update(self, request, *args, **kwargs):
+        media = self.get_object()
+
+        if not can_manage_property(request.user, media.property):
+            raise PermissionDenied(
+                "You do not have permission to update this media."
+            )
+
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        media = self.get_object()
+
+        if not can_manage_property(request.user, media.property):
+            raise PermissionDenied(
+                "You do not have permission to update this media."
+            )
+
+        return super().partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        media = self.get_object()
+
+        if not can_manage_property(request.user, media.property):
+            raise PermissionDenied(
+                "You do not have permission to delete this media."
+            )
+
+        return super().destroy(request, *args, **kwargs)

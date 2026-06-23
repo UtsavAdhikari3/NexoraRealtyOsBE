@@ -5,8 +5,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.permissions import IsAuthenticated, BasePermission
-
+from rest_framework.permissions import IsAuthenticated
+from users.permissions import IsAgencyOwnerOrManager
 from .serializers import (
     RegisterSerializer,
     LoginResponseSerializer,
@@ -120,13 +120,7 @@ class LoginView(APIView):
             }
         )
     
-class IsAgencyOwnerOrManager(BasePermission):
-    def has_permission(self, request, view):
-        return (
-            request.user
-            and request.user.is_authenticated
-            and request.user.role in ["agency_owner", "agency_manager"]
-        )
+
     
 class AgentListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated, IsAgencyOwnerOrManager]

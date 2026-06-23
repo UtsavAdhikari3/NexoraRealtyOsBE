@@ -79,6 +79,13 @@ class AgentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+        read_only_fields = [
+            "id",
+            "email",
+            "role",
+            "created_at",
+        ]
+
 class AgentCreateSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
@@ -96,6 +103,11 @@ class AgentCreateSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         request = self.context["request"]
+
+        if not request.user.agency_id:
+            raise serializers.ValidationError(
+                "Only agency users can create agents."
+            )
 
         return User.objects.create_user(
             email=validated_data["email"],
