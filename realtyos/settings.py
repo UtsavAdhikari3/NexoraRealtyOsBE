@@ -44,7 +44,8 @@ INSTALLED_APPS = [
     'corsheaders',
     'users',
     'agencies',
-    'properties'
+    'properties',
+    'leads'
 ]
 
 CORS_ALLOW_CREDENTIALS = True
