@@ -59,6 +59,11 @@ class LeadSerializer(serializers.ModelSerializer):
             return value
 
         request = self.context.get("request")
+        
+        if request and request.user.role == "agent":
+            raise serializers.ValidationError(
+                "Agents cannot assign or reassign leads."
+            )
 
         if request and value.agency != request.user.agency:
             raise serializers.ValidationError(
