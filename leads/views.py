@@ -19,6 +19,18 @@ from .serializers import (
 )
 
 
+def get_accessible_leads_for_user(user):
+    queryset = Lead.objects.filter(
+        agency=user.agency
+    )
+
+    if user.role == "agent":
+        queryset = queryset.filter(
+            assigned_agent=user
+        )
+
+    return queryset
+
 LEAD_FILTER_PARAMETERS = [
     OpenApiParameter(
         name="status",
@@ -80,9 +92,8 @@ class LeadListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Lead.objects.filter(
-            agency=self.request.user.agency
-        ).select_related(
+        queryset = get_accessible_leads_for_user(
+                self.request.user).select_related(
             "agency",
             "assigned_agent",
         ).prefetch_related(
@@ -138,8 +149,17 @@ class LeadListCreateView(generics.ListCreateAPIView):
         return queryset
 
     def perform_create(self, serializer):
+        user = self.request.user
+
+        if user.role == "agent":
+            serializer.save(
+                agency=user.agency,
+                assigned_agent=user
+            )
+            return
+
         serializer.save(
-            agency=self.request.user.agency
+            agency=user.agency
         )
 
 
@@ -148,8 +168,8 @@ class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Lead.objects.filter(
-            agency=self.request.user.agency
+        return get_accessible_leads_for_user(
+            self.request.user
         ).select_related(
             "agency",
             "assigned_agent",
@@ -165,10 +185,9 @@ class LeadPropertyInterestListCreateView(generics.ListCreateAPIView):
 
     def get_lead(self):
         return get_object_or_404(
-            Lead,
-            id=self.kwargs["lead_id"],
-            agency=self.request.user.agency
-        )
+                get_accessible_leads_for_user(self.request.user),
+                id=self.kwargs["lead_id"]
+            )
 
     def get_queryset(self):
         lead = self.get_lead()
@@ -202,14 +221,20 @@ class LeadPropertyInterestDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return LeadPropertyInterest.objects.filter(
+        queryset = LeadInteraction.objects.filter(
             agency=self.request.user.agency
         ).select_related(
-            "property",
             "lead",
             "agency",
+            "agent",
         )
 
+        if self.request.user.role == "agent":
+            queryset = queryset.filter(
+                lead__assigned_agent=self.request.user
+            )
+
+        return queryset
 
 class LeadInteractionListCreateView(generics.ListCreateAPIView):
     serializer_class = LeadInteractionSerializer
@@ -217,9 +242,8 @@ class LeadInteractionListCreateView(generics.ListCreateAPIView):
 
     def get_lead(self):
         return get_object_or_404(
-            Lead,
-            id=self.kwargs["lead_id"],
-            agency=self.request.user.agency
+            get_accessible_leads_for_user(self.request.user),
+            id=self.kwargs["lead_id"]
         )
 
     def get_queryset(self):
