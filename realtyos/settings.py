@@ -45,7 +45,8 @@ INSTALLED_APPS = [
     'users',
     'agencies',
     'properties',
-    'leads'
+    'leads',
+    'site_visits'
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -95,6 +96,9 @@ DATABASES = {
         "PORT": os.getenv("DB_PORT", "5432"),
     }
 }
+
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = "Nexora RealtyOS <noreply@nexora.com>"
 
 
 # Password validation
