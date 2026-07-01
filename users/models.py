@@ -6,7 +6,9 @@ from django.contrib.auth.models import (
 from django.db import models
 
 from agencies.models import Agency
-
+from django.conf import settings
+from django.contrib.auth.hashers import make_password, check_password
+from django.utils import timezone
 
 class AgencyUserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -29,6 +31,7 @@ class AgencyUserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
+        extra_fields.setdefault("is_email_verified", True)
         extra_fields.setdefault("role", "super_admin")
         extra_fields.setdefault("agency", None)
 
@@ -72,6 +75,7 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
 
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    is_email_verified = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -82,3 +86,54 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+    
+
+class EmailOTP(models.Model):
+    PURPOSE_LOGIN_VERIFICATION = "login_verification"
+
+    PURPOSE_CHOICES = [
+        (PURPOSE_LOGIN_VERIFICATION, "Login Verification"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_otps"
+    )
+
+    code_hash = models.CharField(max_length=255)
+
+    purpose = models.CharField(
+        max_length=50,
+        choices=PURPOSE_CHOICES,
+        default=PURPOSE_LOGIN_VERIFICATION
+    )
+
+    expires_at = models.DateTimeField()
+
+    attempts = models.PositiveIntegerField(default=0)
+
+    is_used = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def check_code(self, raw_code):
+        return check_password(raw_code, self.code_hash)
+
+    @classmethod
+    def create_otp(cls, user, raw_code, expires_at, purpose=PURPOSE_LOGIN_VERIFICATION):
+        return cls.objects.create(
+            user=user,
+            code_hash=make_password(raw_code),
+            purpose=purpose,
+            expires_at=expires_at,
+        )
+
+    def __str__(self):
+        return f"{self.user.email} - {self.purpose}"

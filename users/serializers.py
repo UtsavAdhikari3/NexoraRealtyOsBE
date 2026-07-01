@@ -119,3 +119,21 @@ class AgentCreateSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         return AgentSerializer(instance).data
+    
+class VerifyLoginOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(
+        min_length=6,
+        max_length=6
+    )
+
+    def validate_email(self, value):
+        return value.lower().strip()
+
+
+class ResendLoginOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+    def validate_email(self, value):
+        return value.lower().strip()
