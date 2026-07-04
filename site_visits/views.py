@@ -249,11 +249,14 @@ class PublicSiteVisitRequestView(APIView):
     serializer_class = PublicSiteVisitRequestSerializer
 
     @transaction.atomic
-    def post(self, request, property_id):
+    def post(self, request, license_number, property_id):
         property_obj = get_object_or_404(
             Property,
             id=property_id,
-            is_published=True
+            agency__license_number=license_number,
+            agency__payment_status="paid",
+            is_published=True,
+            status="available",
         )
 
         serializer = PublicSiteVisitRequestSerializer(
