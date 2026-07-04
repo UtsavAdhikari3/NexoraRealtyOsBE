@@ -7,13 +7,70 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .serializers import TestMarkAgencyPaidSerializer
+from .serializers import TestMarkAgencyPaidSerializer,AgencyProfileSerializer
 from .models import Agency
 from drf_spectacular.utils import extend_schema
-
+from rest_framework.permissions import IsAuthenticated
 User = get_user_model()
 
 
+class AgencyProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses={
+            200: AgencyProfileSerializer,
+        }
+    )
+    def get(self, request):
+        agency = request.user.agency
+
+        if not agency:
+            return Response(
+                {
+                    "detail": "User is not linked to any agency."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = AgencyProfileSerializer(agency)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        request=AgencyProfileSerializer,
+        responses={
+            200: AgencyProfileSerializer,
+        }
+    )
+    def patch(self, request):
+        user = request.user
+        agency = user.agency
+
+        if not agency:
+            return Response(
+                {
+                    "detail": "User is not linked to any agency."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if user.role != "agency_owner":
+            return Response(
+                {
+                    "detail": "Only agency owners can update agency profile."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = AgencyProfileSerializer(
+            agency,
+            data=request.data,
+            partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
 class TestMarkAgencyPaidView(APIView):
     permission_classes = [AllowAny]
     serializer_class = TestMarkAgencyPaidSerializer

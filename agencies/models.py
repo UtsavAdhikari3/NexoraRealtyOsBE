@@ -23,6 +23,15 @@ class Agency(models.Model):
     email = models.EmailField(blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
 
+    facebook_url = models.URLField(max_length=500, blank=True, null=True)
+    instagram_url = models.URLField(max_length=500, blank=True, null=True)
+    tiktok_url = models.URLField(max_length=500, blank=True, null=True)
+    youtube_url = models.URLField(max_length=500, blank=True, null=True)
+    linkedin_url = models.URLField(max_length=500, blank=True, null=True)
+
+    whatsapp_number = models.CharField(max_length=30, blank=True, null=True)
+    viber_number = models.CharField(max_length=30, blank=True, null=True)
+
     payment_status = models.CharField(
         max_length=20,
         choices=PAYMENT_STATUS_CHOICES,
