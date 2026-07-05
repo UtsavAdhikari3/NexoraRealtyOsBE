@@ -12,4 +12,12 @@ class PublicAgencySerializer(serializers.ModelSerializer):
             "license_number",
             "email",
             "phone",
+
+            "facebook_url",
+            "instagram_url",
+            "tiktok_url",
+            "youtube_url",
+            "linkedin_url",
+            "whatsapp_number",
+            "viber_number",
         ]
