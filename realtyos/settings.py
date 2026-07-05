@@ -46,7 +46,8 @@ INSTALLED_APPS = [
     'agencies',
     'properties',
     'leads',
-    'site_visits'
+    'site_visits',
+    'social_media',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -143,6 +144,16 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = "users.AgencyUser"
+
+
+META_APP_ID = os.getenv("META_APP_ID")
+META_APP_SECRET = os.getenv("META_APP_SECRET")
+META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v23.0")
+META_REDIRECT_URI = os.getenv("META_REDIRECT_URI")
+FRONTEND_SOCIAL_SUCCESS_URL = os.getenv(
+    "FRONTEND_SOCIAL_SUCCESS_URL",
+    "http://localhost:3000/dashboard/social"
+)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (

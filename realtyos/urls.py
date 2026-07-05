@@ -15,6 +15,7 @@ urlpatterns = [
     path("api/public/", include("agencies.public_urls")),
     path("api/public/", include("properties.public_urls")),
     path("api/public/", include("site_visits.public_urls")),
+    path("api/social-posts/", include("social_media.urls")),
 
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),

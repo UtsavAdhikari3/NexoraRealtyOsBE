@@ -12,3 +12,4 @@ djangorestframework-simplejwt
 drf_spectacular
 Pillow
 django-cors-headers
+requests
