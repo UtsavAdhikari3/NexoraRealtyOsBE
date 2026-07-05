@@ -178,7 +178,64 @@ class Property(models.Model):
         choices=STATUS_CHOICES,
         default="draft"
     )
+    FURNISHING_UNFURNISHED = "unfurnished"
+    FURNISHING_SEMI = "semi_furnished"
+    FURNISHING_FULL = "fully_furnished"
 
+    FURNISHING_STATUS_CHOICES = [
+        (FURNISHING_UNFURNISHED, "Unfurnished"),
+        (FURNISHING_SEMI, "Semi-Furnished"),
+        (FURNISHING_FULL, "Fully Furnished"),
+    ]
+
+    FACING_NORTH = "north"
+    FACING_SOUTH = "south"
+    FACING_EAST = "east"
+    FACING_WEST = "west"
+    FACING_NORTH_EAST = "north_east"
+    FACING_NORTH_WEST = "north_west"
+    FACING_SOUTH_EAST = "south_east"
+    FACING_SOUTH_WEST = "south_west"
+
+    FACING_DIRECTION_CHOICES = [
+        (FACING_NORTH, "North"),
+        (FACING_SOUTH, "South"),
+        (FACING_EAST, "East"),
+        (FACING_WEST, "West"),
+        (FACING_NORTH_EAST, "North-East"),
+        (FACING_NORTH_WEST, "North-West"),
+        (FACING_SOUTH_EAST, "South-East"),
+        (FACING_SOUTH_WEST, "South-West"),
+    ]
+    year_built = models.PositiveIntegerField(
+        null=True,
+        blank=True
+    )
+
+    parking_spaces = models.PositiveIntegerField(
+        null=True,
+        blank=True
+    )
+
+    parking_type = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    furnishing_status = models.CharField(
+        max_length=30,
+        choices=FURNISHING_STATUS_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    facing_direction = models.CharField(
+        max_length=30,
+        choices=FACING_DIRECTION_CHOICES,
+        blank=True,
+        null=True
+    )
     is_published = models.BooleanField(default=False)
     is_featured = models.BooleanField(default=False)
 

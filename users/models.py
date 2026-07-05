@@ -64,7 +64,29 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
         null=True,
         blank=True
     )
+    
+    phone = models.CharField(
+        max_length=30,
+        blank=True,
+        null=True
+    )
 
+    profile_image = models.ImageField(
+        upload_to="agent_profiles/",
+        blank=True,
+        null=True
+    )
+
+    designation = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    bio = models.TextField(
+        blank=True,
+        null=True
+    )
     full_name = models.CharField(max_length=255)
 
     role = models.CharField(

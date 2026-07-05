@@ -13,7 +13,18 @@ from drf_spectacular.utils import (
 from drf_spectacular.types import OpenApiTypes
 
 from .models import Property
-from .public_serializers import PublicPropertySerializer
+from .public_serializers import (
+    PublicPropertySerializer,
+    PublicPropertyInquirySerializer,
+)
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+
+from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+
+from leads.models import Lead, LeadPropertyInterest, LeadInteraction
 
 
 PUBLIC_PROPERTY_FILTER_PARAMETERS = [
@@ -239,5 +250,118 @@ class PublicPropertyFilterOptionsView(APIView):
                     for value, label in Property.PURPOSES
                 ],
                 "locations": location_values,
+            }
+        )
+    
+class PublicPropertyInquiryView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = PublicPropertyInquirySerializer
+
+    @transaction.atomic
+    def post(self, request, license_number, property_id):
+        serializer = PublicPropertyInquirySerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        property_obj = get_object_or_404(
+            Property,
+            id=property_id,
+            agency__license_number=license_number,
+            agency__payment_status="paid",
+            is_published=True,
+            status="available",
+        )
+
+        data = serializer.validated_data
+
+        lead = Lead.objects.create(
+            agency=property_obj.agency,
+            assigned_agent=property_obj.assigned_agent,
+            full_name=data["full_name"],
+            phone=data["phone"],
+            email=data.get("email", ""),
+            source="website",
+            status="new",
+            preferred_location=property_obj.city or property_obj.district,
+            purpose=property_obj.purpose,
+            property_type=property_obj.property_type,
+            notes=data.get("message", ""),
+        )
+
+        lead_interest = LeadPropertyInterest.objects.create(
+            agency=property_obj.agency,
+            lead=lead,
+            property=property_obj,
+            interest_level="high",
+            notes=data.get("message", ""),
+        )
+
+        lead_interaction = LeadInteraction.objects.create(
+            agency=property_obj.agency,
+            lead=lead,
+            agent=property_obj.assigned_agent,
+            interaction_type="note",
+            note=data.get("message", "Public property inquiry submitted."),
+        )
+
+        return Response(
+            {
+                "message": "Inquiry submitted successfully.",
+                "lead": {
+                    "id": lead.id,
+                    "full_name": lead.full_name,
+                    "phone": lead.phone,
+                    "email": lead.email,
+                    "status": lead.status,
+                    "source": lead.source,
+                    "assigned_agent": lead.assigned_agent.id if lead.assigned_agent else None,
+                },
+                "property_interest": {
+                    "id": lead_interest.id,
+                    "property": property_obj.id,
+                    "property_title": property_obj.title,
+                    "interest_level": lead_interest.interest_level,
+                },
+                "interaction": {
+                    "id": lead_interaction.id,
+                    "interaction_type": lead_interaction.interaction_type,
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
+    
+class PublicSimilarPropertiesView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, license_number, property_id):
+        current_property = get_object_or_404(
+            get_public_properties_queryset(license_number),
+            id=property_id,
+        )
+
+        similar_properties = get_public_properties_queryset(
+            license_number
+        ).exclude(
+            id=current_property.id
+        ).filter(
+            Q(property_type=current_property.property_type)
+            | Q(purpose=current_property.purpose)
+            | Q(city__iexact=current_property.city)
+            | Q(district__iexact=current_property.district)
+        ).distinct()[:6]
+
+        serializer = PublicPropertySerializer(
+            similar_properties,
+            many=True,
+            context={
+                "request": request
+            }
+        )
+
+        return Response(
+            {
+                "count": len(serializer.data),
+                "results": serializer.data,
             }
         )
