@@ -66,22 +66,25 @@ class LoginResponseSerializer(serializers.Serializer):
     user = serializers.DictField()
     agency = serializers.DictField()
 
-
+from .models import AgencyUser
 class AgentSerializer(serializers.ModelSerializer):
     class Meta:
-        model = User
+        model = AgencyUser
         fields = [
             "id",
             "email",
             "full_name",
             "role",
+            "phone",
+            "profile_image",
+            "designation",
+            "bio",
             "is_active",
             "created_at",
         ]
 
         read_only_fields = [
             "id",
-            "email",
             "role",
             "created_at",
         ]
