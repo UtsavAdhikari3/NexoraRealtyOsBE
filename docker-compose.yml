@@ -19,6 +19,8 @@ services:
       - .:/app
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       DB_NAME: real_estate_db
       DB_USER: postgres
@@ -26,12 +28,6 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DEBUG: "True"
-
-      META_APP_ID: "your_meta_app_id"
-      META_APP_SECRET: "your_meta_app_secret"
-      META_GRAPH_VERSION: "v23.0"
-      META_REDIRECT_URI: "https://your-ngrok-url.ngrok-free.app/api/social/connections/meta/callback/"
-      FRONTEND_SOCIAL_SUCCESS_URL: "http://localhost:3000/dashboard/social"
     depends_on:
       - db
 

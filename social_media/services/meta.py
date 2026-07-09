@@ -1,3 +1,5 @@
+from urllib.parse import urlencode
+
 import requests
 from django.conf import settings
 
@@ -8,23 +10,26 @@ def graph_base_url():
 
 
 def build_meta_oauth_url(state):
-    scopes = [
-        "pages_show_list",
-        "pages_read_engagement",
-        "pages_manage_posts",
-        "instagram_basic",
-        "instagram_content_publish",
-    ]
+    params = {
+        "client_id": settings.META_APP_ID,
+        "redirect_uri": settings.META_REDIRECT_URI,
+        "state": state,
+        "response_type": "code",
+    }
 
-    scope_string = ",".join(scopes)
+    # Preferred: Facebook Login for Business configuration
+    if getattr(settings, "META_LOGIN_CONFIG_ID", None):
+        params["config_id"] = settings.META_LOGIN_CONFIG_ID
+    else:
+        # Safe fallback scopes that already worked for you
+        params["scope"] = ",".join([
+            "pages_show_list",
+            "pages_read_engagement",
+        ])
 
     return (
-        "https://www.facebook.com/"
-        f"{settings.META_GRAPH_VERSION}/dialog/oauth"
-        f"?client_id={settings.META_APP_ID}"
-        f"&redirect_uri={settings.META_REDIRECT_URI}"
-        f"&state={state}"
-        f"&scope={scope_string}"
+        f"https://www.facebook.com/{settings.META_GRAPH_VERSION}/dialog/oauth?"
+        + urlencode(params)
     )
 
 
@@ -96,3 +101,19 @@ def get_instagram_account_from_page(page_id, page_access_token):
 
     data = response.json()
     return data.get("instagram_business_account")
+
+
+def publish_facebook_feed_post(page_id, page_access_token, message):
+    url = f"{graph_base_url()}/{page_id}/feed"
+
+    response = requests.post(
+        url,
+        data={
+            "message": message,
+            "access_token": page_access_token,
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+    return response.json()

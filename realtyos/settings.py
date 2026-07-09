@@ -27,7 +27,7 @@ SECRET_KEY = 'django-insecure-#&5zxh$&ybmv!8)wz%sor0^+%r3vjw8!o=l*70i7_es05ifwj0
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["localhost","handled-slimness-unsightly.ngrok-free.dev"]
 
 
 # Application definition
@@ -150,6 +150,7 @@ META_APP_ID = os.getenv("META_APP_ID")
 META_APP_SECRET = os.getenv("META_APP_SECRET")
 META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v23.0")
 META_REDIRECT_URI = os.getenv("META_REDIRECT_URI")
+META_LOGIN_CONFIG_ID = os.getenv("META_LOGIN_CONFIG_ID")
 FRONTEND_SOCIAL_SUCCESS_URL = os.getenv(
     "FRONTEND_SOCIAL_SUCCESS_URL",
     "http://localhost:3000/dashboard/social"

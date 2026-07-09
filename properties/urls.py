@@ -13,6 +13,7 @@ urlpatterns = [
         PropertyListCreateView.as_view(),
         name="property-list"
     ),
+    
 
     path(
         "filter-options/",
