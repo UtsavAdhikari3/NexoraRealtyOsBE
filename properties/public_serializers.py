@@ -2,7 +2,9 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
-from .models import Property, PropertyMedia
+from leads.services import normalize_phone
+
+from .models import Property, PropertyEvent, PropertyMedia
 
 
 class PublicPropertyMediaSerializer(serializers.ModelSerializer):
@@ -96,19 +98,19 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
-    def get_agency_name(self, obj):
+    def get_agency_name(self, obj) -> str | None:
         if obj.agency:
             return obj.agency.name
 
         return None
 
-    def get_assigned_agent_name(self, obj):
+    def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
             return obj.assigned_agent.full_name
 
         return None
 
-    def get_assigned_agent_detail(self, obj):
+    def get_assigned_agent_detail(self, obj) -> dict | None:
         if not obj.assigned_agent:
             return None
 
@@ -133,7 +135,7 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "profile_image": profile_image_url,
         }
 
-    def get_location_display(self, obj):
+    def get_location_display(self, obj) -> str:
         parts = [
             obj.neighbourhood,
             obj.city,
@@ -149,10 +151,10 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             ]
         )
 
-    def get_display_property_id(self, obj):
+    def get_display_property_id(self, obj) -> str:
         return f"LP-{obj.id:03d}"
 
-    def get_price_per_sqft(self, obj):
+    def get_price_per_sqft(self, obj) -> str | None:
         if not obj.price:
             return None
 
@@ -175,13 +177,13 @@ class PublicPropertySerializer(serializers.ModelSerializer):
 
         return str(price_per_sqft)
 
-    def get_furnishing_status_display(self, obj):
+    def get_furnishing_status_display(self, obj) -> str | None:
         if not obj.furnishing_status:
             return None
 
         return obj.get_furnishing_status_display()
 
-    def get_facing_direction_display(self, obj):
+    def get_facing_direction_display(self, obj) -> str | None:
         if not obj.facing_direction:
             return None
 
@@ -198,7 +200,27 @@ class PublicPropertyInquirySerializer(serializers.Serializer):
         return value.strip()
 
     def validate_phone(self, value):
-        return value.strip()
+        normalized = normalize_phone(value)
+        if len(normalized.lstrip("+")) < 7:
+            raise serializers.ValidationError("Enter a valid phone number.")
+        return normalized
 
     def validate_email(self, value):
         return value.lower().strip()
+
+
+class PublicPropertyEventSerializer(serializers.Serializer):
+    event_type = serializers.ChoiceField(
+        choices=[
+            PropertyEvent.EVENT_VIEW,
+            PropertyEvent.EVENT_WHATSAPP_CLICK,
+            PropertyEvent.EVENT_VIBER_CLICK,
+            PropertyEvent.EVENT_CALL_CLICK,
+        ]
+    )
+    visitor_id = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    referrer = serializers.URLField(max_length=1000, required=False, allow_blank=True)
+    utm_source = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    utm_medium = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    utm_campaign = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    metadata = serializers.JSONField(required=False)

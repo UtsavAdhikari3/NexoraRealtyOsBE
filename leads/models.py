@@ -22,10 +22,23 @@ class Lead(models.Model):
         ("contacted", "Contacted"),
         ("interested", "Interested"),
         ("site_visit_scheduled", "Site Visit Scheduled"),
+        ("site_visit_completed", "Site Visit Completed"),
         ("negotiating", "Negotiating"),
+        ("token_booking", "Token / Booking"),
         ("won", "Won"),
         ("lost", "Lost"),
+        ("follow_up_later", "Follow Up Later"),
         ("archived", "Archived"),
+    ]
+
+    FOLLOW_UP_PENDING = "pending"
+    FOLLOW_UP_COMPLETED = "completed"
+    FOLLOW_UP_NONE = "none"
+
+    FOLLOW_UP_STATUS_CHOICES = [
+        (FOLLOW_UP_NONE, "None"),
+        (FOLLOW_UP_PENDING, "Pending"),
+        (FOLLOW_UP_COMPLETED, "Completed"),
     ]
 
     agency = models.ForeignKey(
@@ -40,6 +53,14 @@ class Lead(models.Model):
         null=True,
         blank=True,
         related_name="assigned_leads"
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_leads",
     )
 
     full_name = models.CharField(max_length=255)
@@ -90,12 +111,28 @@ class Lead(models.Model):
     )
 
     notes = models.TextField(blank=True)
+    last_contacted_at = models.DateTimeField(null=True, blank=True)
+    next_follow_up_at = models.DateTimeField(null=True, blank=True)
+    follow_up_status = models.CharField(
+        max_length=20,
+        choices=FOLLOW_UP_STATUS_CHOICES,
+        default=FOLLOW_UP_NONE,
+    )
+    lost_reason = models.CharField(max_length=255, blank=True)
+    follow_up_reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    follow_up_reminder_error = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["agency", "status", "created_at"]),
+            models.Index(fields=["agency", "assigned_agent", "status"]),
+            models.Index(fields=["agency", "follow_up_status", "next_follow_up_at"]),
+            models.Index(fields=["agency", "phone"]),
+        ]
 
     def __str__(self):
         return f"{self.full_name} - {self.phone}"
@@ -200,3 +237,33 @@ class LeadInteraction(models.Model):
 
     def __str__(self):
         return f"{self.lead.full_name} - {self.interaction_type}"
+
+
+class LeadStatusHistory(models.Model):
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.CASCADE,
+        related_name="status_history",
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.CASCADE,
+        related_name="lead_status_history",
+    )
+    from_status = models.CharField(max_length=40, blank=True)
+    to_status = models.CharField(max_length=40, choices=Lead.STATUS_CHOICES)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lead_status_changes",
+    )
+    note = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.lead_id}: {self.from_status} -> {self.to_status}"

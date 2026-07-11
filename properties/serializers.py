@@ -1,4 +1,5 @@
 from decimal import Decimal, ROUND_HALF_UP
+from django.conf import settings
 
 from rest_framework import serializers
 
@@ -30,6 +31,62 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+    def validate_file(self, value):
+        if value is None:
+            return value
+
+        max_size_mb = getattr(settings, "MAX_UPLOAD_SIZE_MB", 15)
+        if value.size > max_size_mb * 1024 * 1024:
+            raise serializers.ValidationError(
+                f"File size cannot exceed {max_size_mb} MB."
+            )
+
+        allowed_types = getattr(
+            settings,
+            "ALLOWED_MEDIA_CONTENT_TYPES",
+            [
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+                "application/pdf",
+                "video/mp4",
+            ],
+        )
+        content_type = getattr(value, "content_type", "")
+        if content_type and content_type not in allowed_types:
+            raise serializers.ValidationError("Unsupported file type.")
+        return value
+
+    def validate(self, attrs):
+        file_value = attrs.get("file", getattr(self.instance, "file", None))
+        external_url = attrs.get(
+            "external_url",
+            getattr(self.instance, "external_url", ""),
+        )
+        if not file_value and not external_url:
+            raise serializers.ValidationError(
+                "Provide either an uploaded file or an external URL."
+            )
+        return attrs
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        if instance.is_primary:
+            PropertyMedia.objects.filter(
+                property=instance.property,
+                is_primary=True,
+            ).exclude(id=instance.id).update(is_primary=False)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        if instance.is_primary:
+            PropertyMedia.objects.filter(
+                property=instance.property,
+                is_primary=True,
+            ).exclude(id=instance.id).update(is_primary=False)
+        return instance
+
 
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)
@@ -49,13 +106,13 @@ class PropertySerializer(serializers.ModelSerializer):
             "agency",
         )
 
-    def get_assigned_agent_name(self, obj):
+    def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
             return obj.assigned_agent.full_name
 
         return None
 
-    def get_assigned_agent_detail(self, obj):
+    def get_assigned_agent_detail(self, obj) -> dict | None:
         if not obj.assigned_agent:
             return None
 
@@ -66,10 +123,10 @@ class PropertySerializer(serializers.ModelSerializer):
             "role": obj.assigned_agent.role,
         }
 
-    def get_display_property_id(self, obj):
+    def get_display_property_id(self, obj) -> str:
         return f"LP-{obj.id:03d}"
 
-    def get_price_per_sqft(self, obj):
+    def get_price_per_sqft(self, obj) -> str | None:
         if not obj.price:
             return None
 
@@ -92,13 +149,13 @@ class PropertySerializer(serializers.ModelSerializer):
 
         return str(price_per_sqft)
 
-    def get_furnishing_status_display(self, obj):
+    def get_furnishing_status_display(self, obj) -> str | None:
         if not obj.furnishing_status:
             return None
 
         return obj.get_furnishing_status_display()
 
-    def get_facing_direction_display(self, obj):
+    def get_facing_direction_display(self, obj) -> str | None:
         if not obj.facing_direction:
             return None
 

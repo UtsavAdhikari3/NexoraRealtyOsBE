@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 
@@ -8,6 +9,37 @@ from agencies.models import Agency
 
 
 User = get_user_model()
+
+
+class AuthenticationThrottleAPITestCase(APITestCase):
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_repeated_login_attempts_are_throttled(self):
+        url = reverse("login")
+        payload = {
+            "email": "missing@example.com",
+            "password": "IncorrectPassword123",
+        }
+
+        responses = [
+            self.client.post(url, payload, format="json")
+            for _ in range(11)
+        ]
+
+        self.assertTrue(
+            all(
+                response.status_code == status.HTTP_401_UNAUTHORIZED
+                for response in responses[:10]
+            )
+        )
+        self.assertEqual(
+            responses[10].status_code,
+            status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
 
 class AgentRolePermissionAPITestCase(APITestCase):

@@ -1,8 +1,14 @@
+from django.db import transaction
 from django.db.models import Q
+from django.http import Http404
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
-from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from drf_spectacular.utils import (
     extend_schema,
@@ -10,21 +16,12 @@ from drf_spectacular.utils import (
     OpenApiParameter,
 )
 from drf_spectacular.types import OpenApiTypes
-from django.db import transaction
 from .models import SiteVisit
 from .serializers import SiteVisitSerializer, PublicSiteVisitRequestSerializer
-
-from django.db import transaction
-from django.shortcuts import get_object_or_404
 from .emails import send_site_visit_scheduled_email
-
-from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
-
-from properties.models import Property
-from leads.models import Lead, LeadPropertyInterest, LeadInteraction
+from properties.models import Property, PropertyEvent
+from leads.models import LeadPropertyInterest, LeadInteraction, LeadStatusHistory
+from leads.services import get_or_create_public_lead
 
 
 SITE_VISIT_FILTER_PARAMETERS = [
@@ -222,16 +219,53 @@ class SiteVisitDetailView(generics.RetrieveUpdateDestroyAPIView):
     def update(self, request, *args, **kwargs):
         site_visit_before_update = self.get_object()
         old_status = site_visit_before_update.status
+        old_scheduled_at = site_visit_before_update.scheduled_at
 
         response = super().update(request, *args, **kwargs)
 
         site_visit_after_update = self.get_object()
 
+        if old_scheduled_at != site_visit_after_update.scheduled_at:
+            SiteVisit.objects.filter(id=site_visit_after_update.id).update(
+                scheduled_email_sent_at=None,
+                scheduled_email_error="",
+                reminder_sent_at=None,
+                reminder_error="",
+            )
+            site_visit_after_update.refresh_from_db()
+
         if (
-            old_status != "scheduled"
-            and site_visit_after_update.status == "scheduled"
+            site_visit_after_update.status == "scheduled"
+            and (
+                old_status != "scheduled"
+                or old_scheduled_at != site_visit_after_update.scheduled_at
+            )
         ):
             queue_site_visit_scheduled_email(site_visit_after_update)
+
+        if site_visit_after_update.status == "completed" and not site_visit_after_update.completed_at:
+            site_visit_after_update.completed_at = timezone.now()
+            site_visit_after_update.save(update_fields=["completed_at"])
+
+        lead = site_visit_after_update.lead
+        target_lead_status = None
+        if site_visit_after_update.status == "scheduled":
+            target_lead_status = "site_visit_scheduled"
+        elif site_visit_after_update.status == "completed":
+            target_lead_status = "site_visit_completed"
+
+        if target_lead_status and lead.status != target_lead_status:
+            previous_status = lead.status
+            lead.status = target_lead_status
+            lead.save(update_fields=["status", "updated_at"])
+            LeadStatusHistory.objects.create(
+                agency=lead.agency,
+                lead=lead,
+                from_status=previous_status,
+                to_status=target_lead_status,
+                changed_by=request.user,
+                note="Updated from site visit workflow.",
+            )
 
         return response
 
@@ -246,7 +280,9 @@ class SiteVisitDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class PublicSiteVisitRequestView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     serializer_class = PublicSiteVisitRequestSerializer
+    throttle_scope = "public_submission"
 
     @transaction.atomic
     def post(self, request, license_number, property_id):
@@ -255,9 +291,16 @@ class PublicSiteVisitRequestView(APIView):
             id=property_id,
             agency__license_number=license_number,
             agency__payment_status="paid",
+            agency__is_active=True,
             is_published=True,
             status="available",
         )
+
+        if (
+            property_obj.agency.subscription_expires_at
+            and property_obj.agency.subscription_expires_at <= timezone.now()
+        ):
+            raise Http404()
 
         serializer = PublicSiteVisitRequestSerializer(
             data=request.data
@@ -283,26 +326,26 @@ class PublicSiteVisitRequestView(APIView):
             ]
         )
 
-        lead = Lead.objects.create(
+        lead, lead_created = get_or_create_public_lead(
             agency=property_obj.agency,
             assigned_agent=assigned_agent,
             full_name=data["full_name"],
             phone=data["phone"],
             email=data.get("email", ""),
-            source="website",
-            status="new",
             preferred_location=preferred_location,
             purpose=property_obj.purpose,
             property_type=property_obj.property_type,
             notes=data.get("message", ""),
         )
 
-        lead_interest = LeadPropertyInterest.objects.create(
+        lead_interest, _ = LeadPropertyInterest.objects.get_or_create(
             agency=property_obj.agency,
             lead=lead,
             property=property_obj,
-            interest_level="hot",
-            notes="Requested site visit from public website.",
+            defaults={
+                "interest_level": "hot",
+                "notes": "Requested site visit from public website.",
+            },
         )
 
         site_visit = SiteVisit.objects.create(
@@ -328,6 +371,13 @@ class PublicSiteVisitRequestView(APIView):
             ),
             follow_up_date=data["preferred_datetime"],
         )
+        PropertyEvent.objects.create(
+            agency=property_obj.agency,
+            property=property_obj,
+            lead=lead,
+            event_type=PropertyEvent.EVENT_SITE_VISIT_REQUEST,
+            visitor_id=request.headers.get("X-Visitor-ID", "")[:100],
+        )
 
         return Response(
             {
@@ -352,6 +402,7 @@ class PublicSiteVisitRequestView(APIView):
                     "id": lead_interest.id,
                     "interest_level": lead_interest.interest_level,
                 },
+                "lead_created": lead_created,
             },
             status=status.HTTP_201_CREATED,
         )

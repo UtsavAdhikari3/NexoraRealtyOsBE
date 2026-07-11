@@ -55,6 +55,11 @@ class SiteVisit(models.Model):
     )
 
     notes = models.TextField(blank=True)
+    outcome = models.TextField(blank=True)
+    cancellation_reason = models.CharField(max_length=255, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    reminder_error = models.TextField(blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -69,6 +74,10 @@ class SiteVisit(models.Model):
 
     class Meta:
         ordering = ["-scheduled_at"]
+        indexes = [
+            models.Index(fields=["agency", "status", "scheduled_at"]),
+            models.Index(fields=["agency", "assigned_agent", "scheduled_at"]),
+        ]
 
     def __str__(self):
         return f"{self.lead.full_name} - {self.property.title} - {self.scheduled_at}"

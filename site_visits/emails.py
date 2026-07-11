@@ -92,3 +92,41 @@ Nexora RealtyOS
         )
 
         return False
+
+
+def send_site_visit_reminder(site_visit_id):
+    site_visit = SiteVisit.objects.select_related(
+        "lead", "property", "assigned_agent", "agency"
+    ).get(id=site_visit_id)
+
+    if site_visit.reminder_sent_at or site_visit.status not in ["scheduled", "rescheduled"]:
+        return False
+    if not site_visit.lead.email:
+        SiteVisit.objects.filter(id=site_visit.id).update(
+            reminder_error="Lead email is not available."
+        )
+        return False
+
+    try:
+        send_mail(
+            subject="Reminder: your site visit is coming up",
+            message=(
+                f"Hi {site_visit.lead.full_name},\n\n"
+                f"This is a reminder for your site visit.\n"
+                f"Property: {site_visit.property.title}\n"
+                f"Date/Time: {site_visit.scheduled_at}\n"
+                f"Agent: "
+                f"{site_visit.assigned_agent.full_name if site_visit.assigned_agent else 'To be assigned'}\n"
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[site_visit.lead.email],
+            fail_silently=False,
+        )
+        SiteVisit.objects.filter(id=site_visit.id).update(
+            reminder_sent_at=timezone.now(),
+            reminder_error="",
+        )
+        return True
+    except Exception as exc:
+        SiteVisit.objects.filter(id=site_visit.id).update(reminder_error=str(exc))
+        return False

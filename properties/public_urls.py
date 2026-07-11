@@ -6,6 +6,7 @@ from .public_views import (
     PublicPropertyFilterOptionsView,
     PublicPropertyInquiryView,
     PublicSimilarPropertiesView,
+    PublicPropertyEventView,
 )
 
 
@@ -32,6 +33,12 @@ urlpatterns = [
         "agencies/<str:license_number>/properties/<int:property_id>/similar/",
         PublicSimilarPropertiesView.as_view(),
         name="public-similar-properties"
+    ),
+
+    path(
+        "agencies/<str:license_number>/properties/<int:property_id>/events/",
+        PublicPropertyEventView.as_view(),
+        name="public-property-event"
     ),
 
     path(

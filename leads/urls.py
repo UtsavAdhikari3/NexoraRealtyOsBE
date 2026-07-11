@@ -7,6 +7,8 @@ from .views import (
     LeadPropertyInterestDetailView,
     LeadInteractionListCreateView,
     LeadInteractionDetailView,
+    LeadFollowUpCompleteView,
+    LeadTimelineView,
 )
 
 
@@ -45,5 +47,15 @@ urlpatterns = [
         "interactions/<int:pk>/",
         LeadInteractionDetailView.as_view(),
         name="lead-interaction-detail"
+    ),
+    path(
+        "<int:lead_id>/complete-follow-up/",
+        LeadFollowUpCompleteView.as_view(),
+        name="lead-complete-follow-up",
+    ),
+    path(
+        "<int:lead_id>/timeline/",
+        LeadTimelineView.as_view(),
+        name="lead-timeline",
     ),
 ]

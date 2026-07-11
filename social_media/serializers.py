@@ -14,6 +14,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "id",
             "agency",
             "property",
+            "social_account",
             "property_title",
             "platform",
             "caption",
@@ -22,6 +23,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "scheduled_at",
             "published_at",
             "error_message",
+            "external_post_id",
             "created_by",
             "created_by_name",
             "created_at",
@@ -32,12 +34,13 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "created_by",
             "published_at",
             "error_message",
+            "external_post_id",
         ]
 
-    def get_property_title(self, obj):
+    def get_property_title(self, obj) -> str | None:
         return obj.property.title if obj.property else None
 
-    def get_created_by_name(self, obj):
+    def get_created_by_name(self, obj) -> str | None:
         return obj.created_by.full_name if obj.created_by else None
 
     def validate_property(self, value):
@@ -52,6 +55,43 @@ class SocialPostSerializer(serializers.ModelSerializer):
             )
 
         return value
+
+    def validate_social_account(self, value):
+        if value is None:
+            return value
+        request = self.context.get("request")
+        if value.agency_id != request.user.agency_id:
+            raise serializers.ValidationError(
+                "You can only use a social account connected to your agency."
+            )
+        if value.status != value.STATUS_CONNECTED:
+            raise serializers.ValidationError("The social account is not connected.")
+        return value
+
+    def validate(self, attrs):
+        status_value = attrs.get(
+            "status",
+            self.instance.status if self.instance else SocialPost.STATUS_DRAFT,
+        )
+        scheduled_at = attrs.get(
+            "scheduled_at",
+            self.instance.scheduled_at if self.instance else None,
+        )
+        social_account = attrs.get(
+            "social_account",
+            self.instance.social_account if self.instance else None,
+        )
+
+        if status_value == SocialPost.STATUS_SCHEDULED:
+            if scheduled_at is None:
+                raise serializers.ValidationError(
+                    {"scheduled_at": "Scheduled time is required."}
+                )
+            if social_account is None:
+                raise serializers.ValidationError(
+                    {"social_account": "A connected account is required."}
+                )
+        return attrs
     
 from .models import SocialAccount
 

@@ -5,7 +5,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
 from users.permissions import IsAgencyOwnerOrManager
 from .serializers import (
     RegisterSerializer,
@@ -42,6 +44,9 @@ User = get_user_model()
 
 class RegisterView(APIView):
     serializer_class = RegisterSerializer
+    throttle_scope = "registration"
+    permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
@@ -114,6 +119,10 @@ def build_login_response(user):
     }
 )
 class LoginView(APIView):
+    throttle_scope = "login"
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
     def post(self, request):
         email = request.data.get("email")
         password = request.data.get("password")
@@ -156,6 +165,12 @@ class LoginView(APIView):
                         "name": user.agency.name,
                     },
                 },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not user.agency.has_active_subscription:
+            return Response(
+                {"detail": "Agency subscription is inactive or expired."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -207,6 +222,9 @@ class AgentDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class VerifyLoginOTPView(APIView):
     serializer_class = VerifyLoginOTPSerializer
+    throttle_scope = "otp_verify"
+    permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = VerifyLoginOTPSerializer(data=request.data)
@@ -244,6 +262,12 @@ class VerifyLoginOTPView(APIView):
                     "payment_required": True,
                     "payment_status": user.agency.payment_status,
                 },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if user.agency and not user.agency.has_active_subscription:
+            return Response(
+                {"detail": "Agency subscription is inactive or expired."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -329,6 +353,9 @@ class VerifyLoginOTPView(APIView):
 
 class ResendLoginOTPView(APIView):
     serializer_class = ResendLoginOTPSerializer
+    throttle_scope = "otp_resend"
+    permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = ResendLoginOTPSerializer(data=request.data)
@@ -377,6 +404,12 @@ class ResendLoginOTPView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        if not user.agency.has_active_subscription:
+            return Response(
+                {"detail": "Agency subscription is inactive or expired."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         send_login_verification_otp(user)
 
         return Response(
@@ -387,3 +420,9 @@ class ResendLoginOTPView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ThrottledTokenRefreshView(TokenRefreshView):
+    throttle_scope = "token_refresh"
+    permission_classes = [AllowAny]
+    authentication_classes = []

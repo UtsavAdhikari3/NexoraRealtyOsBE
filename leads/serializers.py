@@ -1,6 +1,25 @@
 from rest_framework import serializers
 
-from .models import Lead, LeadPropertyInterest, LeadInteraction
+from .models import Lead, LeadPropertyInterest, LeadInteraction, LeadStatusHistory
+
+
+class LeadStatusHistorySerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LeadStatusHistory
+        fields = [
+            "id",
+            "from_status",
+            "to_status",
+            "changed_by",
+            "changed_by_name",
+            "note",
+            "created_at",
+        ]
+
+    def get_changed_by_name(self, obj) -> str | None:
+        return obj.changed_by.full_name if obj.changed_by else None
 
 
 class LeadSerializer(serializers.ModelSerializer):
@@ -15,6 +34,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "agency",
             "assigned_agent",
             "assigned_agent_name",
+            "created_by",
             "full_name",
             "phone",
             "email",
@@ -26,6 +46,12 @@ class LeadSerializer(serializers.ModelSerializer):
             "purpose",
             "property_type",
             "notes",
+            "last_contacted_at",
+            "next_follow_up_at",
+            "follow_up_status",
+            "lost_reason",
+            "follow_up_reminder_sent_at",
+            "follow_up_reminder_error",
             "property_interests_count",
             "interactions_count",
             "created_at",
@@ -35,23 +61,27 @@ class LeadSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "agency",
+            "created_by",
             "assigned_agent_name",
             "property_interests_count",
             "interactions_count",
+            "follow_up_status",
+            "follow_up_reminder_sent_at",
+            "follow_up_reminder_error",
             "created_at",
             "updated_at",
         ]
 
-    def get_assigned_agent_name(self, obj):
+    def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
             return obj.assigned_agent.full_name
 
         return None
 
-    def get_property_interests_count(self, obj):
+    def get_property_interests_count(self, obj) -> int:
         return obj.property_interests.count()
 
-    def get_interactions_count(self, obj):
+    def get_interactions_count(self, obj) -> int:
         return obj.interactions.count()
 
     def validate_assigned_agent(self, value):
@@ -89,6 +119,24 @@ class LeadSerializer(serializers.ModelSerializer):
                     }
                 )
 
+        status_value = attrs.get(
+            "status",
+            self.instance.status if self.instance else Lead._meta.get_field("status").default,
+        )
+        lost_reason = attrs.get(
+            "lost_reason",
+            self.instance.lost_reason if self.instance else "",
+        )
+
+        if status_value == "lost" and not lost_reason.strip():
+            raise serializers.ValidationError(
+                {"lost_reason": "Lost reason is required when a lead is marked lost."}
+            )
+
+        next_follow_up_at = attrs.get("next_follow_up_at")
+        if next_follow_up_at is not None:
+            attrs["follow_up_status"] = Lead.FOLLOW_UP_PENDING
+
         return attrs
 
 
@@ -120,13 +168,13 @@ class LeadPropertyInterestSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-    def get_property_title(self, obj):
+    def get_property_title(self, obj) -> str:
         return obj.property.title
 
-    def get_property_price(self, obj):
+    def get_property_price(self, obj) -> str:
         return obj.property.price
 
-    def get_property_location(self, obj):
+    def get_property_location(self, obj) -> str:
         parts = [
             obj.property.neighbourhood,
             obj.property.city,
@@ -203,7 +251,7 @@ class LeadInteractionSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-    def get_agent_name(self, obj):
+    def get_agent_name(self, obj) -> str | None:
         if obj.agent:
             return obj.agent.full_name
 

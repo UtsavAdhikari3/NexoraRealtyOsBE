@@ -3,6 +3,8 @@ from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 from django.conf import settings
 from django.conf.urls.static import static
+from .dashboard import DashboardSummaryView
+from .health import HealthCheckView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -16,6 +18,8 @@ urlpatterns = [
     path("api/public/", include("properties.public_urls")),
     path("api/public/", include("site_visits.public_urls")),
     path("api/social-posts/", include("social_media.urls")),
+    path("api/dashboard/summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
+    path("api/health/", HealthCheckView.as_view(), name="health-check"),
 
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),

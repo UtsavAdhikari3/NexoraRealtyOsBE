@@ -164,6 +164,7 @@ class PropertyListCreateView(generics.ListCreateAPIView):
 
 class PropertyFilterOptionsView(APIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = PropertySerializer
 
     def get(self, request):
         agency = request.user.agency

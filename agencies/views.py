@@ -8,14 +8,48 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .serializers import TestMarkAgencyPaidSerializer
+from .serializers import AgencySerializer
 from .models import Agency
 from drf_spectacular.utils import extend_schema
 
 User = get_user_model()
 
 
+class CurrentAgencyView(APIView):
+    serializer_class = AgencySerializer
+
+    def get(self, request):
+        if not request.user.is_authenticated or not request.user.agency_id:
+            return Response(
+                {"detail": "An agency account is required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return Response(self.serializer_class(request.user.agency).data)
+
+    def patch(self, request):
+        if not request.user.is_authenticated or not request.user.agency_id:
+            return Response(
+                {"detail": "An agency account is required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if request.user.role not in ["agency_owner", "agency_manager"]:
+            return Response(
+                {"detail": "Only owners or managers can update agency settings."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = self.serializer_class(
+            request.user.agency,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
 class TestMarkAgencyPaidView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
     serializer_class = TestMarkAgencyPaidSerializer
 
     @extend_schema(

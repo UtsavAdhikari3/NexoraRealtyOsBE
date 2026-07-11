@@ -1,0 +1,68 @@
+from django.core.cache import cache
+from django.urls import reverse
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from agencies.models import Agency
+from leads.models import Lead
+from users.models import AgencyUser
+
+
+class AgencyMVPAPITestCase(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.agency = Agency.objects.create(
+            name="Agency Profile",
+            license_number="AG-MVP-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.owner = AgencyUser.objects.create_user(
+            email="agency-owner@example.com",
+            password="Password123",
+            full_name="Agency Owner",
+            agency=self.agency,
+            role=AgencyUser.ROLE_AGENCY_OWNER,
+        )
+        self.agent = AgencyUser.objects.create_user(
+            email="agency-agent@example.com",
+            password="Password123",
+            full_name="Agency Agent",
+            agency=self.agency,
+            role=AgencyUser.ROLE_AGENT,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_owner_can_update_profile_but_not_payment(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            reverse("current-agency"),
+            {"about": "Trusted local agency", "payment_status": "cancelled"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.about, "Trusted local agency")
+        self.assertEqual(self.agency.payment_status, Agency.PAYMENT_PAID)
+
+    def test_public_agents_and_contact_capture(self):
+        agents = self.client.get(
+            reverse(
+                "public-agent-list",
+                kwargs={"license_number": self.agency.license_number},
+            )
+        )
+        self.assertEqual(agents.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(agents.data), 1)
+
+        contact = self.client.post(
+            reverse(
+                "public-agency-contact",
+                kwargs={"license_number": self.agency.license_number},
+            ),
+            {"full_name": "Visitor", "phone": "+977 9800000000", "message": "Call me"},
+            format="json",
+        )
+        self.assertEqual(contact.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Lead.objects.get().phone, "9800000000")

@@ -4,7 +4,7 @@ from rest_framework.exceptions import PermissionDenied
 from .models import SocialPost
 from .serializers import SocialPostSerializer
 from django.conf import settings
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404, redirect
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -17,6 +17,7 @@ from .services.meta import (
     get_facebook_pages,
     get_instagram_account_from_page,
 )
+from .services.publishing import publish_social_post
 
 
 class SocialPostListCreateView(generics.ListCreateAPIView):
@@ -80,9 +81,49 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
             "property",
             "created_by",
         )
+
+
+class SocialPostPublishView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "social_publish"
+    serializer_class = SocialPostSerializer
+
+    def post(self, request, pk):
+        queryset = SocialPost.objects.select_related("social_account")
+        if request.user.role != "super_admin":
+            queryset = queryset.filter(agency=request.user.agency)
+        post = get_object_or_404(queryset, pk=pk)
+        account = post.social_account
+
+        if not account:
+            return Response(
+                {"detail": "Select a connected social account first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if account.status != SocialAccount.STATUS_CONNECTED:
+            return Response(
+                {"detail": "The selected social account is disconnected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if account.platform != SocialAccount.PLATFORM_FACEBOOK:
+            return Response(
+                {"detail": "MVP direct publishing currently supports Facebook pages."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            publish_social_post(post)
+            return Response(SocialPostSerializer(post).data)
+        except Exception as exc:
+            return Response(
+                {"detail": "Publishing failed.", "error": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
     
 class MetaConnectionStartView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "oauth"
+    serializer_class = SocialAccountSerializer
 
     def get(self, request):
         user = request.user
@@ -105,6 +146,9 @@ class MetaConnectionStartView(APIView):
 
 class MetaConnectionCallbackView(APIView):
     permission_classes = []
+    authentication_classes = []
+    throttle_scope = "oauth"
+    serializer_class = SocialAccountSerializer
 
     def get(self, request):
         code = request.query_params.get("code")
@@ -236,6 +280,7 @@ class SocialAccountListView(generics.ListAPIView):
 
 class SocialAccountDisconnectView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SocialAccountSerializer
 
     def post(self, request, pk):
         user = request.user

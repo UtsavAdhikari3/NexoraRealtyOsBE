@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from leads.services import normalize_phone
 
 from .models import SiteVisit
 
@@ -25,10 +26,18 @@ class SiteVisitSerializer(serializers.ModelSerializer):
             "scheduled_at",
             "status",
             "notes",
+            "outcome",
+            "cancellation_reason",
+            "completed_at",
+            "reminder_sent_at",
+            "reminder_error",
             "created_by",
             "created_by_name",
             "created_at",
             "updated_at",
+            "completed_at",
+            "reminder_sent_at",
+            "reminder_error",
             "scheduled_email_sent_at",
             "scheduled_email_error",
         ]
@@ -46,13 +55,13 @@ class SiteVisitSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
-    def get_lead_name(self, obj):
+    def get_lead_name(self, obj) -> str:
         return obj.lead.full_name
 
-    def get_property_title(self, obj):
+    def get_property_title(self, obj) -> str:
         return obj.property.title
 
-    def get_property_location(self, obj):
+    def get_property_location(self, obj) -> str:
         parts = [
             obj.property.neighbourhood,
             obj.property.city,
@@ -68,13 +77,13 @@ class SiteVisitSerializer(serializers.ModelSerializer):
             ]
         )
 
-    def get_assigned_agent_name(self, obj):
+    def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
             return obj.assigned_agent.full_name
 
         return None
 
-    def get_created_by_name(self, obj):
+    def get_created_by_name(self, obj) -> str | None:
         if obj.created_by:
             return obj.created_by.full_name
 
@@ -148,6 +157,19 @@ class SiteVisitSerializer(serializers.ModelSerializer):
                     "Lead and property must belong to the same agency."
                 )
 
+        status_value = attrs.get(
+            "status",
+            self.instance.status if self.instance else "scheduled",
+        )
+        cancellation_reason = attrs.get(
+            "cancellation_reason",
+            self.instance.cancellation_reason if self.instance else "",
+        )
+        if status_value == "cancelled" and not cancellation_reason.strip():
+            raise serializers.ValidationError(
+                {"cancellation_reason": "Cancellation reason is required."}
+            )
+
         if request and request.user.role == "agent":
             blocked_update_fields = {
                 "lead",
@@ -182,3 +204,9 @@ class PublicSiteVisitRequestSerializer(serializers.Serializer):
             "base_template": "textarea.html"
         }
     )
+
+    def validate_phone(self, value):
+        normalized = normalize_phone(value)
+        if len(normalized.lstrip("+")) < 7:
+            raise serializers.ValidationError("Enter a valid phone number.")
+        return normalized

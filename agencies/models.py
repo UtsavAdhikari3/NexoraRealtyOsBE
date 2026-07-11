@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils import timezone
+from django.utils.text import slugify
 
 
 class Agency(models.Model):
@@ -19,6 +20,23 @@ class Agency(models.Model):
 
     name = models.CharField(max_length=255)
     license_number = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=180, unique=True, blank=True, null=True)
+
+    logo = models.ImageField(upload_to="agency_branding/logos/", blank=True, null=True)
+    cover_image = models.ImageField(
+        upload_to="agency_branding/covers/",
+        blank=True,
+        null=True,
+    )
+    about = models.TextField(blank=True)
+    address = models.TextField(blank=True)
+    province = models.CharField(max_length=100, blank=True)
+    district = models.CharField(max_length=100, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    business_hours = models.CharField(max_length=255, blank=True)
+    primary_color = models.CharField(max_length=20, blank=True)
+    is_active = models.BooleanField(default=True)
+    subscription_expires_at = models.DateTimeField(null=True, blank=True)
 
     email = models.EmailField(blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
@@ -52,6 +70,22 @@ class Agency(models.Model):
                 "paid_at",
             ]
         )
+
+    @property
+    def has_active_subscription(self):
+        if not self.is_active or self.payment_status != self.PAYMENT_PAID:
+            return False
+
+        if self.subscription_expires_at is None:
+            return True
+
+        return self.subscription_expires_at > timezone.now()
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(f"{self.name}-{self.license_number}")[:180]
+
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name

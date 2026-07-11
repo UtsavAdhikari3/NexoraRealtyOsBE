@@ -1,9 +1,12 @@
 from django.db.models import Q
+from django.utils import timezone
+from decimal import Decimal, InvalidOperation
 
 from rest_framework import generics
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 
 from drf_spectacular.utils import (
     extend_schema,
@@ -12,8 +15,9 @@ from drf_spectacular.utils import (
 )
 from drf_spectacular.types import OpenApiTypes
 
-from .models import Property
+from .models import Property, PropertyEvent
 from .public_serializers import (
+    PublicPropertyEventSerializer,
     PublicPropertySerializer,
     PublicPropertyInquirySerializer,
 )
@@ -24,7 +28,8 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from leads.models import Lead, LeadPropertyInterest, LeadInteraction
+from leads.models import LeadPropertyInterest, LeadInteraction
+from leads.services import get_or_create_public_lead
 
 
 PUBLIC_PROPERTY_FILTER_PARAMETERS = [
@@ -98,8 +103,12 @@ def get_public_properties_queryset(license_number):
     return Property.objects.filter(
         agency__license_number=license_number,
         agency__payment_status="paid",
+        agency__is_active=True,
         is_published=True,
         status="available",
+    ).filter(
+        Q(agency__subscription_expires_at__isnull=True)
+        | Q(agency__subscription_expires_at__gt=timezone.now())
     ).select_related(
         "agency",
         "assigned_agent",
@@ -112,12 +121,22 @@ def get_public_properties_queryset(license_number):
     )
 
 
+def parse_decimal_filter(value, field_name):
+    if value in [None, ""]:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValidationError({field_name: "Enter a valid number."})
+
+
 @extend_schema_view(
     get=extend_schema(parameters=PUBLIC_PROPERTY_FILTER_PARAMETERS)
 )
 class PublicPropertyListView(generics.ListAPIView):
     serializer_class = PublicPropertySerializer
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def get_queryset(self):
         queryset = get_public_properties_queryset(
@@ -133,6 +152,15 @@ class PublicPropertyListView(generics.ListAPIView):
         bathrooms = self.request.query_params.get("bathrooms")
         featured = self.request.query_params.get("featured")
         search = self.request.query_params.get("search")
+        province = self.request.query_params.get("province")
+        district = self.request.query_params.get("district")
+        city = self.request.query_params.get("city")
+        furnishing = self.request.query_params.get("furnishing_status")
+        facing = self.request.query_params.get("facing_direction")
+        land_area_min = self.request.query_params.get("land_area_min")
+        land_area_max = self.request.query_params.get("land_area_max")
+        road_access_min = self.request.query_params.get("road_access_min")
+        ordering = self.request.query_params.get("ordering")
 
         if property_type and property_type != "all":
             queryset = queryset.filter(property_type=property_type)
@@ -149,10 +177,16 @@ class PublicPropertyListView(generics.ListAPIView):
                 | Q(address__icontains=location)
             )
 
-        if price_min:
+        price_min = parse_decimal_filter(price_min, "price_min")
+        price_max = parse_decimal_filter(price_max, "price_max")
+        land_area_min = parse_decimal_filter(land_area_min, "land_area_min")
+        land_area_max = parse_decimal_filter(land_area_max, "land_area_max")
+        road_access_min = parse_decimal_filter(road_access_min, "road_access_min")
+
+        if price_min is not None:
             queryset = queryset.filter(price__gte=price_min)
 
-        if price_max:
+        if price_max is not None:
             queryset = queryset.filter(price__lte=price_max)
 
         if bedrooms and str(bedrooms).isdigit():
@@ -163,6 +197,23 @@ class PublicPropertyListView(generics.ListAPIView):
 
         if featured == "true":
             queryset = queryset.filter(is_featured=True)
+
+        if province:
+            queryset = queryset.filter(province__iexact=province)
+        if district:
+            queryset = queryset.filter(district__iexact=district)
+        if city:
+            queryset = queryset.filter(city__iexact=city)
+        if furnishing:
+            queryset = queryset.filter(furnishing_status=furnishing)
+        if facing:
+            queryset = queryset.filter(facing_direction=facing)
+        if land_area_min is not None:
+            queryset = queryset.filter(land_area_value__gte=land_area_min)
+        if land_area_max is not None:
+            queryset = queryset.filter(land_area_value__lte=land_area_max)
+        if road_access_min is not None:
+            queryset = queryset.filter(road_access_value__gte=road_access_min)
 
         if search:
             queryset = queryset.filter(
@@ -176,12 +227,22 @@ class PublicPropertyListView(generics.ListAPIView):
                 | Q(address__icontains=search)
             )
 
+        ordering_fields = {
+            "price": "price",
+            "-price": "-price",
+            "newest": "-created_at",
+            "oldest": "created_at",
+        }
+        if ordering in ordering_fields:
+            queryset = queryset.order_by(ordering_fields[ordering])
+
         return queryset
 
 
 class PublicPropertyDetailView(generics.RetrieveAPIView):
     serializer_class = PublicPropertySerializer
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def get_queryset(self):
         return get_public_properties_queryset(
@@ -191,6 +252,8 @@ class PublicPropertyDetailView(generics.RetrieveAPIView):
 
 class PublicPropertyFilterOptionsView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicPropertySerializer
 
     def get(self, request, license_number):
         properties = get_public_properties_queryset(
@@ -255,6 +318,8 @@ class PublicPropertyFilterOptionsView(APIView):
     
 class PublicPropertyInquiryView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "public_submission"
     serializer_class = PublicPropertyInquirySerializer
 
     @transaction.atomic
@@ -265,36 +330,32 @@ class PublicPropertyInquiryView(APIView):
         serializer.is_valid(raise_exception=True)
 
         property_obj = get_object_or_404(
-            Property,
+            get_public_properties_queryset(license_number),
             id=property_id,
-            agency__license_number=license_number,
-            agency__payment_status="paid",
-            is_published=True,
-            status="available",
         )
 
         data = serializer.validated_data
 
-        lead = Lead.objects.create(
+        lead, lead_created = get_or_create_public_lead(
             agency=property_obj.agency,
             assigned_agent=property_obj.assigned_agent,
             full_name=data["full_name"],
             phone=data["phone"],
             email=data.get("email", ""),
-            source="website",
-            status="new",
             preferred_location=property_obj.city or property_obj.district,
             purpose=property_obj.purpose,
             property_type=property_obj.property_type,
             notes=data.get("message", ""),
         )
 
-        lead_interest = LeadPropertyInterest.objects.create(
+        lead_interest, _ = LeadPropertyInterest.objects.get_or_create(
             agency=property_obj.agency,
             lead=lead,
             property=property_obj,
-            interest_level="high",
-            notes=data.get("message", ""),
+            defaults={
+                "interest_level": "high",
+                "notes": data.get("message", ""),
+            },
         )
 
         lead_interaction = LeadInteraction.objects.create(
@@ -303,6 +364,13 @@ class PublicPropertyInquiryView(APIView):
             agent=property_obj.assigned_agent,
             interaction_type="note",
             note=data.get("message", "Public property inquiry submitted."),
+        )
+        PropertyEvent.objects.create(
+            agency=property_obj.agency,
+            property=property_obj,
+            lead=lead,
+            event_type=PropertyEvent.EVENT_INQUIRY,
+            visitor_id=request.headers.get("X-Visitor-ID", "")[:100],
         )
 
         return Response(
@@ -327,12 +395,15 @@ class PublicPropertyInquiryView(APIView):
                     "id": lead_interaction.id,
                     "interaction_type": lead_interaction.interaction_type,
                 },
+                "lead_created": lead_created,
             },
-            status=status.HTTP_201_CREATED,
+            status=(status.HTTP_201_CREATED if lead_created else status.HTTP_200_OK),
         )
     
 class PublicSimilarPropertiesView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicPropertySerializer
 
     def get(self, request, license_number, property_id):
         current_property = get_object_or_404(
@@ -364,4 +435,28 @@ class PublicSimilarPropertiesView(APIView):
                 "count": len(serializer.data),
                 "results": serializer.data,
             }
+        )
+
+
+class PublicPropertyEventView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "public_event"
+    serializer_class = PublicPropertyEventSerializer
+
+    def post(self, request, license_number, property_id):
+        property_obj = get_object_or_404(
+            get_public_properties_queryset(license_number),
+            id=property_id,
+        )
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        event = PropertyEvent.objects.create(
+            agency=property_obj.agency,
+            property=property_obj,
+            **serializer.validated_data,
+        )
+        return Response(
+            {"id": event.id, "event_type": event.event_type},
+            status=status.HTTP_201_CREATED,
         )

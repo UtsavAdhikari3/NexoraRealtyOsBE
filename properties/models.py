@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 from agencies.models import Agency
 from users.models import AgencyUser
@@ -250,6 +251,30 @@ class Property(models.Model):
     def __str__(self):
         return self.title
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["agency", "is_published", "status"]),
+            models.Index(fields=["agency", "property_type", "purpose"]),
+            models.Index(fields=["agency", "assigned_agent", "status"]),
+            models.Index(fields=["city", "district"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        changed_fields = set(kwargs.get("update_fields") or [])
+
+        if self.status != "available":
+            self.is_published = False
+            changed_fields.add("is_published")
+
+        if self.is_published and self.published_at is None:
+            self.published_at = timezone.now()
+            changed_fields.add("published_at")
+
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = changed_fields
+
+        super().save(*args, **kwargs)
+
 
 class PropertyMedia(models.Model):
     MEDIA_TYPES = [
@@ -313,3 +338,49 @@ class PropertyMedia(models.Model):
 
     def __str__(self):
         return f"{self.property.title} - {self.media_type}"
+
+
+class PropertyEvent(models.Model):
+    EVENT_VIEW = "view"
+    EVENT_WHATSAPP_CLICK = "whatsapp_click"
+    EVENT_VIBER_CLICK = "viber_click"
+    EVENT_CALL_CLICK = "call_click"
+    EVENT_INQUIRY = "inquiry"
+    EVENT_SITE_VISIT_REQUEST = "site_visit_request"
+
+    EVENT_TYPE_CHOICES = [
+        (EVENT_VIEW, "Property View"),
+        (EVENT_WHATSAPP_CLICK, "WhatsApp Click"),
+        (EVENT_VIBER_CLICK, "Viber Click"),
+        (EVENT_CALL_CLICK, "Call Click"),
+        (EVENT_INQUIRY, "Inquiry"),
+        (EVENT_SITE_VISIT_REQUEST, "Site Visit Request"),
+    ]
+
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_events")
+    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="events")
+    lead = models.ForeignKey(
+        "leads.Lead",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="property_events",
+    )
+    event_type = models.CharField(max_length=40, choices=EVENT_TYPE_CHOICES)
+    visitor_id = models.CharField(max_length=100, blank=True)
+    referrer = models.URLField(max_length=1000, blank=True)
+    utm_source = models.CharField(max_length=100, blank=True)
+    utm_medium = models.CharField(max_length=100, blank=True)
+    utm_campaign = models.CharField(max_length=150, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["agency", "event_type", "created_at"]),
+            models.Index(fields=["property", "event_type", "created_at"]),
+        ]
+
+
+AREA_UNIT_CHOICES = Property.AREA_UNITS

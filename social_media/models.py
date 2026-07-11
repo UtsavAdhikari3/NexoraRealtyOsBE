@@ -42,6 +42,13 @@ class SocialPost(models.Model):
         blank=True,
         related_name="social_posts",
     )
+    social_account = models.ForeignKey(
+        "SocialAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="posts",
+    )
 
     platform = models.CharField(max_length=30, choices=PLATFORM_CHOICES)
     caption = models.TextField()
@@ -61,6 +68,7 @@ class SocialPost(models.Model):
     scheduled_at = models.DateTimeField(null=True, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True, null=True)
+    external_post_id = models.CharField(max_length=255, blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
