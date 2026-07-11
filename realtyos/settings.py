@@ -67,7 +67,7 @@ if not SECRET_KEY:
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",
-    ["localhost", "127.0.0.1"],
+    ["localhost", "127.0.0.1","handled-slimness-unsightly.ngrok-free.dev"],
 )
 
 

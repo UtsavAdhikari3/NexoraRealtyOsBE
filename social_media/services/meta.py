@@ -4,6 +4,31 @@ import requests
 from django.conf import settings
 
 
+class MetaAPIError(Exception):
+    def __init__(self, message, *, code=None, error_type=None, status_code=400):
+        super().__init__(message)
+        self.code = code
+        self.error_type = error_type
+        self.status_code = status_code
+
+
+def raise_for_meta_error(response):
+    if response.ok:
+        return
+
+    try:
+        error = response.json().get("error", {})
+    except ValueError:
+        error = {}
+
+    raise MetaAPIError(
+        error.get("message", "Meta API request failed."),
+        code=error.get("code"),
+        error_type=error.get("type"),
+        status_code=response.status_code,
+    )
+
+
 def graph_base_url():
     version = settings.META_GRAPH_VERSION
     return f"https://graph.facebook.com/{version}"
@@ -36,9 +61,9 @@ def build_meta_oauth_url(state):
 def exchange_code_for_short_token(code):
     url = f"{graph_base_url()}/oauth/access_token"
 
-    response = requests.get(
+    response = requests.post(
         url,
-        params={
+        data={
             "client_id": settings.META_APP_ID,
             "client_secret": settings.META_APP_SECRET,
             "redirect_uri": settings.META_REDIRECT_URI,
@@ -47,16 +72,16 @@ def exchange_code_for_short_token(code):
         timeout=20,
     )
 
-    response.raise_for_status()
+    raise_for_meta_error(response)
     return response.json()
 
 
 def exchange_short_token_for_long_token(short_lived_token):
     url = f"{graph_base_url()}/oauth/access_token"
 
-    response = requests.get(
+    response = requests.post(
         url,
-        params={
+        data={
             "grant_type": "fb_exchange_token",
             "client_id": settings.META_APP_ID,
             "client_secret": settings.META_APP_SECRET,
@@ -65,7 +90,7 @@ def exchange_short_token_for_long_token(short_lived_token):
         timeout=20,
     )
 
-    response.raise_for_status()
+    raise_for_meta_error(response)
     return response.json()
 
 
@@ -75,13 +100,13 @@ def get_facebook_pages(user_access_token):
     response = requests.get(
         url,
         params={
-            "access_token": user_access_token,
             "fields": "id,name,access_token,instagram_business_account",
         },
+        headers={"Authorization": f"Bearer {user_access_token}"},
         timeout=20,
     )
 
-    response.raise_for_status()
+    raise_for_meta_error(response)
     return response.json().get("data", [])
 
 
@@ -91,13 +116,13 @@ def get_instagram_account_from_page(page_id, page_access_token):
     response = requests.get(
         url,
         params={
-            "access_token": page_access_token,
             "fields": "instagram_business_account{id,username,name}",
         },
+        headers={"Authorization": f"Bearer {page_access_token}"},
         timeout=20,
     )
 
-    response.raise_for_status()
+    raise_for_meta_error(response)
 
     data = response.json()
     return data.get("instagram_business_account")
@@ -115,5 +140,5 @@ def publish_facebook_feed_post(page_id, page_access_token, message):
         timeout=30,
     )
 
-    response.raise_for_status()
+    raise_for_meta_error(response)
     return response.json()

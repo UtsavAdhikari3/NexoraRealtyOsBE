@@ -1,3 +1,5 @@
+import requests
+
 from rest_framework import generics, permissions
 from rest_framework.exceptions import PermissionDenied
 
@@ -16,6 +18,7 @@ from .services.meta import (
     exchange_short_token_for_long_token,
     get_facebook_pages,
     get_instagram_account_from_page,
+    MetaAPIError,
 )
 from .services.publishing import publish_social_post
 
@@ -190,13 +193,35 @@ class MetaConnectionCallbackView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        short_token_data = exchange_code_for_short_token(code)
-        short_token = short_token_data.get("access_token")
+        try:
+            short_token_data = exchange_code_for_short_token(code)
+            short_token = short_token_data.get("access_token")
+            if not short_token:
+                raise MetaAPIError("Meta did not return a short-lived access token.")
 
-        long_token_data = exchange_short_token_for_long_token(short_token)
-        long_token = long_token_data.get("access_token")
+            long_token_data = exchange_short_token_for_long_token(short_token)
+            long_token = long_token_data.get("access_token")
+            if not long_token:
+                raise MetaAPIError("Meta did not return a long-lived access token.")
 
-        pages = get_facebook_pages(long_token)
+            pages = get_facebook_pages(long_token)
+        except MetaAPIError as exc:
+            return Response(
+                {
+                    "detail": "Meta connection failed during token exchange.",
+                    "meta_error": {
+                        "message": str(exc),
+                        "code": exc.code,
+                        "type": exc.error_type,
+                    },
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except requests.RequestException:
+            return Response(
+                {"detail": "Meta is temporarily unreachable. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         connected_accounts = []
 
