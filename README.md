@@ -14,7 +14,7 @@ Django REST backend for a multi-tenant real-estate agency operating system. The 
 - Due/overdue follow-ups and idempotent reminders
 - Site-visit scheduling, outcomes, cancellations, and reminders
 - Property view/contact conversion events and dashboard summaries
-- Meta account connection and Facebook post publishing/scheduling
+- Meta account connection plus Facebook and Instagram image publishing/scheduling
 - OpenAPI, Swagger UI, ReDoc, health checks, and request throttling
 
 ## Local development
@@ -74,6 +74,7 @@ For an MVP deployment, run each command every 5–10 minutes.
 - Enable HTTPS redirect and secure cookies behind a trusted reverse proxy.
 - Back up PostgreSQL and monitor `/api/health/`.
 - Run reminder and publishing commands from a scheduler.
+- Set `PUBLIC_API_BASE_URL` to the public HTTPS API origin for Instagram image fetching.
 - Keep the debug payment endpoint unavailable; it is excluded when `DEBUG=False`.
 
 See [docs/API_CONTRACT.md](docs/API_CONTRACT.md) for the frontend-facing API contract.

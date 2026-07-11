@@ -29,6 +29,9 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DEBUG: "True"
+      GUNICORN_TIMEOUT: "180"
+      GUNICORN_WORKERS: "2"
+      GUNICORN_THREADS: "4"
     depends_on:
       - db
 

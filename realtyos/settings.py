@@ -209,6 +209,19 @@ FRONTEND_SOCIAL_SUCCESS_URL = os.getenv(
     "FRONTEND_SOCIAL_SUCCESS_URL",
     "http://localhost:3000/dashboard/social"
 )
+PUBLIC_API_BASE_URL = os.getenv("PUBLIC_API_BASE_URL", "")
+INSTAGRAM_CONTAINER_POLL_ATTEMPTS = int(
+    os.getenv("INSTAGRAM_CONTAINER_POLL_ATTEMPTS", "10")
+)
+INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS = float(
+    os.getenv("INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS", "2")
+)
+META_HTTP_CONNECT_TIMEOUT_SECONDS = float(
+    os.getenv("META_HTTP_CONNECT_TIMEOUT_SECONDS", "10")
+)
+META_HTTP_READ_TIMEOUT_SECONDS = float(
+    os.getenv("META_HTTP_READ_TIMEOUT_SECONDS", "60")
+)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -259,5 +272,7 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     "ENUM_NAME_OVERRIDES": {
         "AreaUnitEnum": "properties.models.AREA_UNIT_CHOICES",
+        "SocialPostPlatformEnum": "social_media.models.SOCIAL_POST_PLATFORM_CHOICES",
+        "SocialAccountPlatformEnum": "social_media.models.SOCIAL_ACCOUNT_PLATFORM_CHOICES",
     },
 }

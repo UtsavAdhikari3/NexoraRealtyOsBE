@@ -1,12 +1,33 @@
 from rest_framework import serializers
 
 from properties.models import Property
-from .models import SocialPost
+from .models import SocialPost, SocialPublishResult
+
+
+class SocialPublishResultSerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="social_account.name", read_only=True)
+
+    class Meta:
+        model = SocialPublishResult
+        fields = [
+            "id",
+            "social_account",
+            "account_name",
+            "platform",
+            "status",
+            "container_id",
+            "external_post_id",
+            "error_message",
+            "attempt_count",
+            "published_at",
+            "updated_at",
+        ]
 
 
 class SocialPostSerializer(serializers.ModelSerializer):
     property_title = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
+    publish_results = SocialPublishResultSerializer(many=True, read_only=True)
 
     class Meta:
         model = SocialPost
@@ -17,6 +38,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "social_account",
             "property_title",
             "platform",
+            "target_platforms",
             "caption",
             "image",
             "status",
@@ -26,6 +48,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "external_post_id",
             "created_by",
             "created_by_name",
+            "publish_results",
             "created_at",
             "updated_at",
         ]
@@ -68,6 +91,15 @@ class SocialPostSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("The social account is not connected.")
         return value
 
+    def validate_target_platforms(self, value):
+        allowed = {SocialPost.PLATFORM_FACEBOOK, SocialPost.PLATFORM_INSTAGRAM}
+        invalid = set(value) - allowed
+        if invalid:
+            raise serializers.ValidationError(
+                f"Unsupported target platforms: {', '.join(sorted(invalid))}."
+            )
+        return list(dict.fromkeys(value))
+
     def validate(self, attrs):
         status_value = attrs.get(
             "status",
@@ -92,6 +124,19 @@ class SocialPostSerializer(serializers.ModelSerializer):
                     {"social_account": "A connected account is required."}
                 )
         return attrs
+
+
+class SocialPublishRequestSerializer(serializers.Serializer):
+    platforms = serializers.ListField(
+        child=serializers.ChoiceField(
+            choices=[SocialPost.PLATFORM_FACEBOOK, SocialPost.PLATFORM_INSTAGRAM]
+        ),
+        required=False,
+        allow_empty=False,
+    )
+
+    def validate_platforms(self, value):
+        return list(dict.fromkeys(value))
     
 from .models import SocialAccount
 

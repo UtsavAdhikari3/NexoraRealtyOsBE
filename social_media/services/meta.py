@@ -34,12 +34,20 @@ def graph_base_url():
     return f"https://graph.facebook.com/{version}"
 
 
+def meta_request_timeout():
+    return (
+        settings.META_HTTP_CONNECT_TIMEOUT_SECONDS,
+        settings.META_HTTP_READ_TIMEOUT_SECONDS,
+    )
+
+
 def build_meta_oauth_url(state):
     params = {
         "client_id": settings.META_APP_ID,
         "redirect_uri": settings.META_REDIRECT_URI,
         "state": state,
         "response_type": "code",
+        "auth_type": "rerequest",
     }
 
     # Preferred: Facebook Login for Business configuration
@@ -50,6 +58,9 @@ def build_meta_oauth_url(state):
         params["scope"] = ",".join([
             "pages_show_list",
             "pages_read_engagement",
+            "pages_manage_posts",
+            "instagram_basic",
+            "instagram_content_publish",
         ])
 
     return (
@@ -69,7 +80,7 @@ def exchange_code_for_short_token(code):
             "redirect_uri": settings.META_REDIRECT_URI,
             "code": code,
         },
-        timeout=20,
+        timeout=meta_request_timeout(),
     )
 
     raise_for_meta_error(response)
@@ -87,7 +98,7 @@ def exchange_short_token_for_long_token(short_lived_token):
             "client_secret": settings.META_APP_SECRET,
             "fb_exchange_token": short_lived_token,
         },
-        timeout=20,
+        timeout=meta_request_timeout(),
     )
 
     raise_for_meta_error(response)
@@ -103,7 +114,7 @@ def get_facebook_pages(user_access_token):
             "fields": "id,name,access_token,instagram_business_account",
         },
         headers={"Authorization": f"Bearer {user_access_token}"},
-        timeout=20,
+        timeout=meta_request_timeout(),
     )
 
     raise_for_meta_error(response)
@@ -119,7 +130,7 @@ def get_instagram_account_from_page(page_id, page_access_token):
             "fields": "instagram_business_account{id,username,name}",
         },
         headers={"Authorization": f"Bearer {page_access_token}"},
-        timeout=20,
+        timeout=meta_request_timeout(),
     )
 
     raise_for_meta_error(response)
@@ -137,8 +148,79 @@ def publish_facebook_feed_post(page_id, page_access_token, message):
             "message": message,
             "access_token": page_access_token,
         },
-        timeout=30,
+        timeout=meta_request_timeout(),
     )
 
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def publish_facebook_photo_post(
+    page_id,
+    page_access_token,
+    image_file,
+    filename,
+    content_type,
+    message,
+):
+    response = requests.post(
+        f"{graph_base_url()}/{page_id}/photos",
+        data={
+            "caption": message,
+            "published": "true",
+            "access_token": page_access_token,
+        },
+        files={
+            "source": (filename, image_file, content_type),
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def create_instagram_image_container(
+    instagram_account_id,
+    page_access_token,
+    image_url,
+    caption,
+):
+    response = requests.post(
+        f"{graph_base_url()}/{instagram_account_id}/media",
+        data={
+            "image_url": image_url,
+            "caption": caption,
+            "access_token": page_access_token,
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def get_instagram_container_status(container_id, page_access_token):
+    response = requests.get(
+        f"{graph_base_url()}/{container_id}",
+        params={"fields": "status_code,status"},
+        headers={"Authorization": f"Bearer {page_access_token}"},
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def publish_instagram_container(
+    instagram_account_id,
+    page_access_token,
+    container_id,
+):
+    response = requests.post(
+        f"{graph_base_url()}/{instagram_account_id}/media_publish",
+        data={
+            "creation_id": container_id,
+            "access_token": page_access_token,
+        },
+        timeout=meta_request_timeout(),
+    )
     raise_for_meta_error(response)
     return response.json()

@@ -90,13 +90,32 @@ Cancellation requires a reason. Completing a visit records `completed_at` and mo
 |---|---|---|
 | GET/POST | `/api/social-posts/posts/` | Draft/schedule posts |
 | GET/PATCH/DELETE | `/api/social-posts/posts/{id}/` | Manage a post |
-| POST | `/api/social-posts/posts/{id}/publish/` | Publish to a connected Facebook page |
+| POST | `/api/social-posts/posts/{id}/publish/` | Publish to Facebook, Instagram, or both |
 | GET | `/api/social-posts/connections/meta/start/` | Start Meta OAuth |
 | GET | `/api/social-posts/connections/meta/callback/` | OAuth callback |
 | GET | `/api/social-posts/accounts/` | Connected accounts |
 | POST | `/api/social-posts/accounts/{id}/disconnect/` | Disconnect account |
 
-Scheduled posts require both `scheduled_at` and `social_account`.
+Scheduled posts require both `scheduled_at` and `social_account`. Set `target_platforms` to `['facebook', 'instagram']` for scheduled cross-posting.
+
+For immediate cross-posting, call:
+
+```json
+POST /api/social-posts/posts/{id}/publish/
+{
+  "platforms": ["facebook", "instagram"]
+}
+```
+
+The selected `social_account` can be the Facebook Page account. Nexora finds the Instagram account linked to the same Page through the stored `page_id`. Instagram image posts require an uploaded JPEG and a publicly reachable HTTPS media URL. The backend creates an Instagram media container, waits for it to finish, and then publishes it.
+
+Each target is recorded in `publish_results`. Overall statuses are:
+
+- `published`: every requested target succeeded;
+- `partial`: at least one target succeeded and another failed;
+- `failed`: no target succeeded.
+
+A retry skips already published results, preventing duplicate posts on the platform that previously succeeded. Partial responses use HTTP `207`; total upstream failure uses HTTP `502`.
 
 ## Error behavior
 

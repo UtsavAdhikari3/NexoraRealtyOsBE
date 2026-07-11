@@ -16,16 +16,24 @@ class Command(BaseCommand):
         ).select_related("social_account")
 
         published = 0
+        partial = 0
         failed = 0
         for post in posts.iterator():
             try:
                 publish_social_post(post)
-                published += 1
+                post.refresh_from_db(fields=["status"])
+                if post.status == SocialPost.STATUS_PUBLISHED:
+                    published += 1
+                elif post.status == SocialPost.STATUS_PARTIAL:
+                    partial += 1
+                else:
+                    failed += 1
             except Exception:
                 failed += 1
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Published {published} scheduled post(s); {failed} failed."
+                f"Published {published} scheduled post(s); "
+                f"{partial} partially published; {failed} failed."
             )
         )

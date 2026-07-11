@@ -20,12 +20,14 @@ class SocialPost(models.Model):
     STATUS_DRAFT = "draft"
     STATUS_SCHEDULED = "scheduled"
     STATUS_PUBLISHED = "published"
+    STATUS_PARTIAL = "partial"
     STATUS_FAILED = "failed"
 
     STATUS_CHOICES = [
         (STATUS_DRAFT, "Draft"),
         (STATUS_SCHEDULED, "Scheduled"),
         (STATUS_PUBLISHED, "Published"),
+        (STATUS_PARTIAL, "Partially Published"),
         (STATUS_FAILED, "Failed"),
     ]
 
@@ -51,6 +53,7 @@ class SocialPost(models.Model):
     )
 
     platform = models.CharField(max_length=30, choices=PLATFORM_CHOICES)
+    target_platforms = models.JSONField(default=list, blank=True)
     caption = models.TextField()
 
     image = models.ImageField(
@@ -214,3 +217,52 @@ class SocialOAuthState(models.Model):
     def mark_used(self):
         self.used_at = timezone.now()
         self.save(update_fields=["used_at"])
+
+
+class SocialPublishResult(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_PUBLISHED = "published"
+    STATUS_FAILED = "failed"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_PUBLISHED, "Published"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    post = models.ForeignKey(
+        SocialPost,
+        on_delete=models.CASCADE,
+        related_name="publish_results",
+    )
+    social_account = models.ForeignKey(
+        SocialAccount,
+        on_delete=models.CASCADE,
+        related_name="publish_results",
+    )
+    platform = models.CharField(max_length=30, choices=SocialAccount.PLATFORM_CHOICES)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+    container_id = models.CharField(max_length=255, blank=True)
+    external_post_id = models.CharField(max_length=255, blank=True)
+    error_message = models.TextField(blank=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["post", "social_account"],
+                name="unique_social_publish_target",
+            )
+        ]
+        ordering = ["platform", "id"]
+
+
+SOCIAL_POST_PLATFORM_CHOICES = SocialPost.PLATFORM_CHOICES
+SOCIAL_ACCOUNT_PLATFORM_CHOICES = SocialAccount.PLATFORM_CHOICES

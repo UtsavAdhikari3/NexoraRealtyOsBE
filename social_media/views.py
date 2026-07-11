@@ -1,10 +1,11 @@
 import requests
 
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import PermissionDenied
 
 from .models import SocialPost
-from .serializers import SocialPostSerializer
+from .serializers import SocialPostSerializer, SocialPublishRequestSerializer
 from django.conf import settings
 from django.shortcuts import get_object_or_404, redirect
 from rest_framework.views import APIView
@@ -91,6 +92,7 @@ class SocialPostPublishView(APIView):
     throttle_scope = "social_publish"
     serializer_class = SocialPostSerializer
 
+    @extend_schema(request=SocialPublishRequestSerializer, responses=SocialPostSerializer)
     def post(self, request, pk):
         queryset = SocialPost.objects.select_related("social_account")
         if request.user.role != "super_admin":
@@ -108,20 +110,22 @@ class SocialPostPublishView(APIView):
                 {"detail": "The selected social account is disconnected."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if account.platform != SocialAccount.PLATFORM_FACEBOOK:
-            return Response(
-                {"detail": "MVP direct publishing currently supports Facebook pages."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        request_serializer = SocialPublishRequestSerializer(data=request.data or {})
+        request_serializer.is_valid(raise_exception=True)
+        platforms = request_serializer.validated_data.get("platforms")
 
-        try:
-            publish_social_post(post)
-            return Response(SocialPostSerializer(post).data)
-        except Exception as exc:
-            return Response(
-                {"detail": "Publishing failed.", "error": str(exc)},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+        publish_social_post(post, platforms=platforms)
+        post.refresh_from_db()
+        response_status = status.HTTP_200_OK
+        if post.status == SocialPost.STATUS_PARTIAL:
+            response_status = status.HTTP_207_MULTI_STATUS
+        elif post.status == SocialPost.STATUS_FAILED:
+            response_status = status.HTTP_502_BAD_GATEWAY
+
+        return Response(
+            SocialPostSerializer(post, context={"request": request}).data,
+            status=response_status,
+        )
     
 class MetaConnectionStartView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -224,6 +228,7 @@ class MetaConnectionCallbackView(APIView):
             )
 
         connected_accounts = []
+        connection_warnings = []
 
         for page in pages:
             page_id = page.get("id")
@@ -250,10 +255,20 @@ class MetaConnectionCallbackView(APIView):
 
             connected_accounts.append(facebook_account)
 
-            instagram_account_data = get_instagram_account_from_page(
-                page_id=page_id,
-                page_access_token=page_access_token,
-            )
+            try:
+                instagram_account_data = get_instagram_account_from_page(
+                    page_id=page_id,
+                    page_access_token=page_access_token,
+                )
+            except MetaAPIError as exc:
+                instagram_account_data = None
+                connection_warnings.append(
+                    {
+                        "page_id": page_id,
+                        "message": str(exc),
+                        "code": exc.code,
+                    }
+                )
 
             if instagram_account_data:
                 ig_id = instagram_account_data.get("id")
@@ -284,6 +299,7 @@ class MetaConnectionCallbackView(APIView):
         return Response({
             "detail": "Meta connection completed.",
             "connected_accounts": serialized.data,
+            "warnings": connection_warnings,
         })
 
 
