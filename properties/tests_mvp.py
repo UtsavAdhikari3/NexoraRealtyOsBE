@@ -24,6 +24,13 @@ class PublicPropertyMVPAPITestCase(APITestCase):
             agency=self.agency,
             role=AgencyUser.ROLE_AGENT,
         )
+        self.owner = AgencyUser.objects.create_user(
+            email="public-owner@example.com",
+            password="Password123",
+            full_name="Public Owner",
+            agency=self.agency,
+            role=AgencyUser.ROLE_AGENCY_OWNER,
+        )
         self.property = Property.objects.create(
             agency=self.agency,
             assigned_agent=self.agent,
@@ -101,3 +108,32 @@ class PublicPropertyMVPAPITestCase(APITestCase):
             },
         )
         self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_draft_must_be_made_available_before_publication(self):
+        draft = Property.objects.create(
+            agency=self.agency,
+            title="Draft Property",
+            property_type="house",
+            purpose="sale",
+            price="10000000",
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            status="draft",
+        )
+        self.client.force_authenticate(user=self.owner)
+        url = reverse("property-detail", kwargs={"pk": draft.id})
+
+        invalid = self.client.patch(url, {"is_published": True}, format="json")
+        self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("is_published", invalid.data)
+
+        valid = self.client.patch(
+            url,
+            {"status": "available", "is_published": True},
+            format="json",
+        )
+        self.assertEqual(valid.status_code, status.HTTP_200_OK)
+        draft.refresh_from_db()
+        self.assertTrue(draft.is_published)
+        self.assertIsNotNone(draft.published_at)

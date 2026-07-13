@@ -117,6 +117,26 @@ Each target is recorded in `publish_results`. Overall statuses are:
 
 A retry skips already published results, preventing duplicate posts on the platform that previously succeeded. Partial responses use HTTP `207`; total upstream failure uses HTTP `502`.
 
+## Unified social inbox
+
+Meta sends Facebook Page and Instagram Business messaging events to `GET/POST /api/webhooks/meta/`. The GET request verifies the callback; POST requests require Meta's `X-Hub-Signature-256` signature. Payloads and messages are stored idempotently, so webhook retries do not duplicate conversations or messages.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/inbox/conversations/` | List agency conversations |
+| GET | `/api/inbox/conversations/{id}/` | Get a conversation |
+| GET | `/api/inbox/conversations/{id}/messages/` | Get its message history |
+| POST | `/api/inbox/conversations/{id}/reply/` | Send a text reply |
+| POST | `/api/inbox/conversations/{id}/assign/` | Assign or claim a conversation |
+| POST | `/api/inbox/conversations/{id}/link-lead/` | Link an existing CRM lead |
+| POST | `/api/inbox/conversations/{id}/create-lead/` | Create and link a CRM lead |
+| POST | `/api/inbox/conversations/{id}/mark-read/` | Clear the Nexora unread count |
+| PATCH | `/api/inbox/conversations/{id}/status/` | Set `open`, `pending`, `closed`, or `spam` |
+
+Conversation list filters include `platform`, `status`, `assigned_agent`, `unread`, and `search`. Agency owners can access every conversation in their agency. Agents can access conversations assigned to them and unassigned conversations; an agent may claim an unassigned conversation but cannot assign it to another agent.
+
+Set `META_WEBHOOK_VERIFY_TOKEN` to a long random value and use that same value in the Meta dashboard. Configure the callback URL as `https://<public-backend-host>/api/webhooks/meta/`. Reconnect existing Meta accounts after deploying this feature so Nexora can request messaging permissions and subscribe the Page to webhook fields.
+
 ## Error behavior
 
 - `400`: validation failure

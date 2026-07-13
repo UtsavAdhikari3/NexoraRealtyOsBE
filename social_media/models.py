@@ -148,6 +148,9 @@ class SocialAccount(models.Model):
 
     access_token = models.TextField()
     token_expires_at = models.DateTimeField(blank=True, null=True)
+    webhook_subscription_status = models.CharField(max_length=30, blank=True)
+    webhook_subscribed_at = models.DateTimeField(null=True, blank=True)
+    webhook_error = models.TextField(blank=True)
 
     scopes = models.TextField(blank=True, null=True)
     status = models.CharField(

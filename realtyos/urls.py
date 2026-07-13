@@ -5,6 +5,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from .dashboard import DashboardSummaryView
 from .health import HealthCheckView
+from crm_inbox.views import MetaWebhookView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -18,6 +19,8 @@ urlpatterns = [
     path("api/public/", include("properties.public_urls")),
     path("api/public/", include("site_visits.public_urls")),
     path("api/social-posts/", include("social_media.urls")),
+    path("api/inbox/", include("crm_inbox.urls")),
+    path("api/webhooks/meta/", MetaWebhookView.as_view(), name="meta-webhook"),
     path("api/dashboard/summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
     path("api/health/", HealthCheckView.as_view(), name="health-check"),
 

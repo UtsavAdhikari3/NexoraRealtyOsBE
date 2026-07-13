@@ -220,10 +220,14 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             agency=self.agency,
             user=self.owner,
         )
-        response = self.client.get(
-            reverse("meta-connection-callback"),
-            {"code": "test-code", "state": oauth_state.state},
-        )
+        with patch(
+            "social_media.views.subscribe_page_to_webhooks",
+            return_value={"success": True},
+        ):
+            response = self.client.get(
+                reverse("meta-connection-callback"),
+                {"code": "test-code", "state": oauth_state.state},
+            )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         instagram = SocialAccount.objects.get(
             agency=self.agency,

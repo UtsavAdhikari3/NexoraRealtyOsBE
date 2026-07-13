@@ -89,6 +89,7 @@ INSTALLED_APPS = [
     'leads',
     'site_visits',
     'social_media',
+    'crm_inbox',
 ]
 
 CORS_ALLOW_CREDENTIALS = env_bool("CORS_ALLOW_CREDENTIALS", True)
@@ -205,6 +206,7 @@ META_APP_SECRET = os.getenv("META_APP_SECRET")
 META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v23.0")
 META_REDIRECT_URI = os.getenv("META_REDIRECT_URI")
 META_LOGIN_CONFIG_ID = os.getenv("META_LOGIN_CONFIG_ID")
+META_WEBHOOK_VERIFY_TOKEN = os.getenv("META_WEBHOOK_VERIFY_TOKEN", "")
 FRONTEND_SOCIAL_SUCCESS_URL = os.getenv(
     "FRONTEND_SOCIAL_SUCCESS_URL",
     "http://localhost:3000/dashboard/social"
@@ -241,6 +243,7 @@ REST_FRAMEWORK = {
         "public_event": os.getenv("THROTTLE_PUBLIC_EVENT", "120/hour"),
         "oauth": os.getenv("THROTTLE_OAUTH", "20/hour"),
         "social_publish": os.getenv("THROTTLE_SOCIAL_PUBLISH", "30/hour"),
+        "meta_webhook": os.getenv("THROTTLE_META_WEBHOOK", "600/minute"),
     },
 }
 
@@ -274,5 +277,7 @@ SPECTACULAR_SETTINGS = {
         "AreaUnitEnum": "properties.models.AREA_UNIT_CHOICES",
         "SocialPostPlatformEnum": "social_media.models.SOCIAL_POST_PLATFORM_CHOICES",
         "SocialAccountPlatformEnum": "social_media.models.SOCIAL_ACCOUNT_PLATFORM_CHOICES",
+        "ConversationStatusEnum": "crm_inbox.models.Conversation.STATUS_CHOICES",
+        "MessageDeliveryStatusEnum": "crm_inbox.models.SocialMessage.STATUS_CHOICES",
     },
 }

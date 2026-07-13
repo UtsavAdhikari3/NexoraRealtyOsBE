@@ -1,5 +1,6 @@
 import requests
 
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import PermissionDenied
@@ -20,6 +21,7 @@ from .services.meta import (
     get_facebook_pages,
     get_instagram_account_from_page,
     MetaAPIError,
+    subscribe_page_to_webhooks,
 )
 from .services.publishing import publish_social_post
 
@@ -256,6 +258,39 @@ class MetaConnectionCallbackView(APIView):
             connected_accounts.append(facebook_account)
 
             try:
+                subscribe_page_to_webhooks(
+                    page_id=page_id,
+                    page_access_token=page_access_token,
+                )
+                facebook_account.webhook_subscription_status = "subscribed"
+                facebook_account.webhook_subscribed_at = timezone.now()
+                facebook_account.webhook_error = ""
+                facebook_account.save(
+                    update_fields=[
+                        "webhook_subscription_status",
+                        "webhook_subscribed_at",
+                        "webhook_error",
+                    ]
+                )
+            except MetaAPIError as exc:
+                facebook_account.webhook_subscription_status = "failed"
+                facebook_account.webhook_error = str(exc)
+                facebook_account.save(
+                    update_fields=[
+                        "webhook_subscription_status",
+                        "webhook_error",
+                    ]
+                )
+                connection_warnings.append(
+                    {
+                        "page_id": page_id,
+                        "capability": "messaging_webhooks",
+                        "message": str(exc),
+                        "code": exc.code,
+                    }
+                )
+
+            try:
                 instagram_account_data = get_instagram_account_from_page(
                     page_id=page_id,
                     page_access_token=page_access_token,
@@ -287,6 +322,11 @@ class MetaConnectionCallbackView(APIView):
                         "access_token": page_access_token,
                         "status": SocialAccount.STATUS_CONNECTED,
                         "connected_by": oauth_state.user,
+                        "webhook_subscription_status": (
+                            facebook_account.webhook_subscription_status
+                        ),
+                        "webhook_subscribed_at": facebook_account.webhook_subscribed_at,
+                        "webhook_error": facebook_account.webhook_error,
                     },
                 )
 

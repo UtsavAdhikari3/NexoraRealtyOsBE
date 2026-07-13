@@ -61,6 +61,8 @@ def build_meta_oauth_url(state):
             "pages_manage_posts",
             "instagram_basic",
             "instagram_content_publish",
+            "pages_messaging",
+            "instagram_manage_messages",
         ])
 
     return (
@@ -220,6 +222,44 @@ def publish_instagram_container(
             "creation_id": container_id,
             "access_token": page_access_token,
         },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def subscribe_page_to_webhooks(page_id, page_access_token):
+    response = requests.post(
+        f"{graph_base_url()}/{page_id}/subscribed_apps",
+        data={
+            "subscribed_fields": ",".join(
+                [
+                    "messages",
+                    "messaging_postbacks",
+                    "message_deliveries",
+                    "message_reads",
+                ]
+            ),
+            "access_token": page_access_token,
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def send_meta_text_message(account, recipient_external_id, text):
+    payload = {
+        "recipient": {"id": recipient_external_id},
+        "message": {"text": text},
+    }
+    if account.platform == account.PLATFORM_FACEBOOK:
+        payload["messaging_type"] = "RESPONSE"
+
+    response = requests.post(
+        f"{graph_base_url()}/{account.external_id}/messages",
+        json=payload,
+        headers={"Authorization": f"Bearer {account.access_token}"},
         timeout=meta_request_timeout(),
     )
     raise_for_meta_error(response)

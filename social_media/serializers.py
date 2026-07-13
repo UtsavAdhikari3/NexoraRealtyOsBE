@@ -153,6 +153,9 @@ class SocialAccountSerializer(serializers.ModelSerializer):
             "username",
             "page_id",
             "status",
+            "webhook_subscription_status",
+            "webhook_subscribed_at",
+            "webhook_error",
             "created_at",
             "updated_at",
         ]

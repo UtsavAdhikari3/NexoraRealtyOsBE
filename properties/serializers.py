@@ -178,3 +178,25 @@ class PropertySerializer(serializers.ModelSerializer):
             )
 
         return value
+
+    def validate(self, attrs):
+        status_value = attrs.get(
+            "status",
+            self.instance.status if self.instance else "draft",
+        )
+        is_published = attrs.get(
+            "is_published",
+            self.instance.is_published if self.instance else False,
+        )
+
+        if is_published and status_value != "available":
+            raise serializers.ValidationError(
+                {
+                    "is_published": (
+                        "Only properties with status='available' can be published. "
+                        "Set status to 'available' in the same request."
+                    )
+                }
+            )
+
+        return attrs
