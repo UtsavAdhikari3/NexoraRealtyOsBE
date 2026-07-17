@@ -62,7 +62,24 @@ class PublicAgentListView(generics.ListAPIView):
             agency=agency,
             role=User.ROLE_AGENT,
             is_active=True,
-        ).order_by("full_name")
+        ).prefetch_related("assigned_properties").order_by("full_name")
+
+
+class PublicAgentDetailView(generics.RetrieveAPIView):
+    serializer_class = PublicAgentSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get_queryset(self):
+        agency = get_object_or_404(
+            get_public_agencies_queryset(),
+            license_number=self.kwargs["license_number"],
+        )
+        return User.objects.filter(
+            agency=agency,
+            role=User.ROLE_AGENT,
+            is_active=True,
+        ).prefetch_related("assigned_properties")
 
 
 class PublicAgencyContactView(APIView):

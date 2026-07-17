@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from agencies.models import Agency
+from properties.models import Property
 
 
 User = get_user_model()
@@ -163,3 +164,169 @@ class AgentRolePermissionAPITestCase(APITestCase):
         self.agent.refresh_from_db()
 
         self.assertFalse(self.agent.is_active)
+
+
+class AgentProfileAPITestCase(APITestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(
+            name="Agent Profiles Realty",
+            license_number="AGENT-PROFILE-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.other_agency = Agency.objects.create(
+            name="Other Profiles Realty",
+            license_number="AGENT-PROFILE-002",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.agent = User.objects.create_user(
+            email="profile-agent@example.com",
+            password="Password123",
+            full_name="Profile Agent",
+            agency=self.agency,
+            role=User.ROLE_AGENT,
+        )
+        self.owner = User.objects.create_user(
+            email="profile-owner@example.com",
+            password="Password123",
+            full_name="Profile Owner",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+        )
+        self.other_agent = User.objects.create_user(
+            email="other-profile-agent@example.com",
+            password="Password123",
+            full_name="Other Profile Agent",
+            agency=self.other_agency,
+            role=User.ROLE_AGENT,
+        )
+        self.current_property = Property.objects.create(
+            agency=self.agency,
+            assigned_agent=self.agent,
+            title="Published Agent Listing",
+            property_type="house",
+            purpose="sale",
+            price="25000000",
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            status="available",
+            is_published=True,
+        )
+        self.sold_property = Property.objects.create(
+            agency=self.agency,
+            assigned_agent=self.agent,
+            title="Closed Agent Listing",
+            property_type="apartment",
+            purpose="sale",
+            price="18000000",
+            province="Bagmati",
+            district="Lalitpur",
+            city="Lalitpur",
+            status="sold",
+        )
+
+    def test_agent_can_retrieve_and_update_own_profile(self):
+        self.client.force_authenticate(user=self.agent)
+        response = self.client.patch(
+            reverse("agent-self-profile"),
+            {
+                "full_name": "Aarav Shrestha",
+                "phone": "+977 9800000001",
+                "designation": "Principal Broker",
+                "location": "Kathmandu Valley",
+                "years_experience": 14,
+                "languages": [" English ", "Nepali", "english", "Hindi"],
+                "specialties": ["Luxury Villas", "Negotiation"],
+                "bio": "Research-led residential property advisor.",
+                "linkedin_url": "https://linkedin.com/in/aarav",
+                "instagram_url": "https://instagram.com/aarav",
+                "facebook_url": "https://facebook.com/aarav",
+                "deals_closed": 999,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["languages"], ["English", "Nepali", "Hindi"])
+        self.assertEqual(response.data["deals_closed"], 1)
+        self.assertEqual(
+            response.data["current_listing_ids"],
+            [f"LP-{self.current_property.id:03d}"],
+        )
+        self.assertEqual(
+            response.data["sold_property_ids"],
+            [f"LP-{self.sold_property.id:03d}"],
+        )
+        self.agent.refresh_from_db()
+        self.assertEqual(self.agent.full_name, "Aarav Shrestha")
+        self.assertEqual(self.agent.years_experience, 14)
+
+    def test_only_agents_can_use_self_profile_endpoint(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get(reverse("agent-self-profile"))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_invalid_profile_values_are_rejected(self):
+        self.client.force_authenticate(user=self.agent)
+        response = self.client.patch(
+            reverse("agent-self-profile"),
+            {
+                "years_experience": 81,
+                "languages": "English",
+                "linkedin_url": "not-a-url",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_public_agent_detail_returns_profile_and_derived_property_data(self):
+        self.agent.location = "Kathmandu Valley"
+        self.agent.languages = ["English", "Nepali"]
+        self.agent.specialties = ["Luxury Villas"]
+        self.agent.years_experience = 8
+        self.agent.save()
+
+        response = self.client.get(
+            reverse(
+                "public-agent-detail",
+                kwargs={
+                    "license_number": self.agency.license_number,
+                    "pk": self.agent.id,
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["location"], "Kathmandu Valley")
+        self.assertEqual(response.data["deals_closed"], 1)
+        self.assertEqual(
+            response.data["current_listing_ids"],
+            [f"LP-{self.current_property.id:03d}"],
+        )
+        self.assertNotIn("reviews", response.data)
+        self.assertNotIn("rating", response.data)
+
+    def test_public_agent_detail_is_agency_scoped_and_hides_inactive_agents(self):
+        wrong_agency = self.client.get(
+            reverse(
+                "public-agent-detail",
+                kwargs={
+                    "license_number": self.agency.license_number,
+                    "pk": self.other_agent.id,
+                },
+            )
+        )
+        self.assertEqual(wrong_agency.status_code, status.HTTP_404_NOT_FOUND)
+
+        self.agent.is_active = False
+        self.agent.save(update_fields=["is_active"])
+        inactive = self.client.get(
+            reverse(
+                "public-agent-detail",
+                kwargs={
+                    "license_number": self.agency.license_number,
+                    "pk": self.agent.id,
+                },
+            )
+        )
+        self.assertEqual(inactive.status_code, status.HTTP_404_NOT_FOUND)

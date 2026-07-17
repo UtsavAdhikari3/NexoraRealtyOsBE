@@ -8,12 +8,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import AllowAny
-from users.permissions import IsAgencyOwnerOrManager
+from users.permissions import IsAgencyOwnerOrManager, IsAgent
 from .serializers import (
     RegisterSerializer,
     LoginResponseSerializer,
     AgentSerializer,
     AgentCreateSerializer,
+    AgentSelfProfileSerializer,
     VerifyLoginOTPSerializer,
     ResendLoginOTPSerializer,
 )
@@ -100,6 +101,7 @@ def build_login_response(user):
             "full_name": user.full_name,
             "role": user.role,
             "is_email_verified": user.is_email_verified,
+            "profile_completed": user.agent_profile_completed,
         },
 
         "agency": agency_data,
@@ -218,6 +220,18 @@ class AgentDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         instance.is_active = False
         instance.save(update_fields=["is_active"])
+
+
+class AgentSelfProfileView(generics.RetrieveUpdateAPIView):
+    """Allow an authenticated agent to retrieve and maintain only their profile."""
+
+    serializer_class = AgentSelfProfileSerializer
+    permission_classes = [IsAuthenticated, IsAgent]
+
+    def get_object(self):
+        return User.objects.prefetch_related("assigned_properties").get(
+            pk=self.request.user.pk
+        )
 
 
 class VerifyLoginOTPView(APIView):

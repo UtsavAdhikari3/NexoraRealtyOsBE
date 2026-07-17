@@ -22,7 +22,10 @@ Paid, active, non-expired agencies can use protected APIs. Existing JWTs are rej
 |---|---|---|
 | GET/PATCH | `/api/agencies/me/` | Read/update current agency branding and profile |
 | GET/POST | `/api/agents/` | List/create agents |
+| GET/PATCH | `/api/agents/me/profile/` | Agent-only self-service professional profile |
 | GET/PATCH/DELETE | `/api/agents/{id}/` | Manage or deactivate an agent |
+
+Agent profiles include contact details, profile image, designation, location, experience, languages, specialties, biography, and Facebook/Instagram/LinkedIn links. `deals_closed`, `current_listing_ids`, and `sold_property_ids` are read-only values derived from properties assigned to the agent. Profile image updates use `multipart/form-data`; all other profile updates can use JSON.
 
 ## Public website APIs
 
@@ -33,6 +36,7 @@ Public routes only expose active, paid, non-expired agencies and available publi
 | GET | `/api/public/agencies/{license}/` | Agency profile |
 | GET | `/api/public/agencies/by-slug/{slug}/` | Agency profile by slug |
 | GET | `/api/public/agencies/{license}/agents/` | Active public agents |
+| GET | `/api/public/agencies/{license}/agents/{id}/` | Public agent profile and listing/deal summary |
 | POST | `/api/public/agencies/{license}/contact/` | General contact lead capture |
 | GET | `/api/public/agencies/{license}/properties/` | Public property listing/search |
 | GET | `/api/public/agencies/{license}/properties/filter-options/` | Filter values |

@@ -39,6 +39,13 @@ class PublicAgencySerializer(serializers.ModelSerializer):
 
 class PublicAgentSerializer(serializers.ModelSerializer):
     profile_image_url = serializers.SerializerMethodField()
+    profile_completed = serializers.BooleanField(
+        source="agent_profile_completed",
+        read_only=True,
+    )
+    deals_closed = serializers.SerializerMethodField()
+    current_listing_ids = serializers.SerializerMethodField()
+    sold_property_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -50,7 +57,18 @@ class PublicAgentSerializer(serializers.ModelSerializer):
             "profile_image",
             "profile_image_url",
             "designation",
+            "location",
+            "years_experience",
+            "languages",
+            "specialties",
             "bio",
+            "linkedin_url",
+            "instagram_url",
+            "facebook_url",
+            "deals_closed",
+            "current_listing_ids",
+            "sold_property_ids",
+            "profile_completed",
         ]
 
     def get_profile_image_url(self, obj) -> str | None:
@@ -62,6 +80,33 @@ class PublicAgentSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.profile_image.url)
 
         return obj.profile_image.url
+
+    def get_assigned_profile_properties(self, obj):
+        if not hasattr(obj, "_agent_profile_properties"):
+            obj._agent_profile_properties = list(obj.assigned_properties.all())
+        return obj._agent_profile_properties
+
+    def get_deals_closed(self, obj) -> int:
+        return sum(
+            property_obj.status in ["sold", "rented"]
+            for property_obj in self.get_assigned_profile_properties(obj)
+        )
+
+    def get_current_listing_ids(self, obj) -> list[str]:
+        property_ids = sorted(
+            property_obj.id
+            for property_obj in self.get_assigned_profile_properties(obj)
+            if property_obj.status == "available" and property_obj.is_published
+        )
+        return [f"LP-{property_id:03d}" for property_id in property_ids]
+
+    def get_sold_property_ids(self, obj) -> list[str]:
+        property_ids = sorted(
+            property_obj.id
+            for property_obj in self.get_assigned_profile_properties(obj)
+            if property_obj.status in ["sold", "rented"]
+        )
+        return [f"LP-{property_id:03d}" for property_id in property_ids]
 
 
 class PublicAgencyContactSerializer(serializers.Serializer):

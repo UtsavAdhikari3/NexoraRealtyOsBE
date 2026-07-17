@@ -87,6 +87,21 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
         blank=True,
         null=True
     )
+
+    location = models.CharField(max_length=255, blank=True, default="")
+
+    years_experience = models.PositiveSmallIntegerField(default=0)
+
+    languages = models.JSONField(default=list, blank=True)
+
+    specialties = models.JSONField(default=list, blank=True)
+
+    linkedin_url = models.URLField(blank=True, default="")
+    instagram_url = models.URLField(blank=True, default="")
+    facebook_url = models.URLField(blank=True, default="")
+
+    profile_updated_at = models.DateTimeField(auto_now=True)
+
     full_name = models.CharField(max_length=255)
 
     role = models.CharField(
@@ -108,6 +123,25 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+    @property
+    def agent_profile_completed(self):
+        if self.role != self.ROLE_AGENT:
+            return False
+
+        return all(
+            [
+                self.full_name,
+                self.phone,
+                self.profile_image,
+                self.designation,
+                self.location,
+                self.bio,
+                self.years_experience,
+                self.languages,
+                self.specialties,
+            ]
+        )
     
 
 class EmailOTP(models.Model):
