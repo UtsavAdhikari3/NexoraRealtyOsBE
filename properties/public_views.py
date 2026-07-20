@@ -258,7 +258,11 @@ class PublicPropertyFilterOptionsView(APIView):
     def get(self, request, license_number):
         properties = get_public_properties_queryset(
             license_number
-        ).only(
+        ).select_related(
+            None
+        ).prefetch_related(
+            None
+        ).order_by().values(
             "province",
             "district",
             "city",
@@ -290,11 +294,11 @@ class PublicPropertyFilterOptionsView(APIView):
                 }
             )
 
-        for property_obj in properties:
-            add_location(property_obj.province, "province")
-            add_location(property_obj.district, "district")
-            add_location(property_obj.city, "city")
-            add_location(property_obj.neighbourhood, "neighbourhood")
+        for property_values in properties:
+            add_location(property_values["province"], "province")
+            add_location(property_values["district"], "district")
+            add_location(property_values["city"], "city")
+            add_location(property_values["neighbourhood"], "neighbourhood")
 
         return Response(
             {

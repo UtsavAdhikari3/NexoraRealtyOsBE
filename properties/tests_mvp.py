@@ -109,6 +109,34 @@ class PublicPropertyMVPAPITestCase(APITestCase):
         )
         self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_public_filter_options_returns_locations_without_queryset_conflict(self):
+        response = self.client.get(
+            reverse(
+                "public-property-filter-options",
+                kwargs={"license_number": self.agency.license_number},
+            )
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(
+            {
+                "value": "Bagmati",
+                "label": "Bagmati",
+                "type": "province",
+            },
+            response.data["locations"],
+        )
+        self.assertIn(
+            {
+                "value": "Lalitpur",
+                "label": "Lalitpur",
+                "type": "district",
+            },
+            response.data["locations"],
+        )
+        self.assertTrue(response.data["property_types"])
+        self.assertTrue(response.data["purposes"])
+
     def test_draft_must_be_made_available_before_publication(self):
         draft = Property.objects.create(
             agency=self.agency,
