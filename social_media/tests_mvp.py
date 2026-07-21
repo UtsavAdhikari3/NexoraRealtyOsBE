@@ -2,7 +2,9 @@ from unittest.mock import patch
 from io import BytesIO
 
 from django.core.files.base import ContentFile
+from django.test import override_settings
 from django.urls import reverse
+from urllib.parse import parse_qs, urlsplit
 from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -14,6 +16,7 @@ from social_media.models import (
     SocialPost,
     SocialPublishResult,
 )
+from social_media.services.meta import MetaAPIError
 from users.models import AgencyUser
 
 
@@ -208,6 +211,9 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         "social_media.views.exchange_code_for_short_token",
         return_value={"access_token": "short-token"},
     )
+    @override_settings(
+        FRONTEND_SOCIAL_SUCCESS_URL="http://localhost:5173/social-media"
+    )
     def test_oauth_callback_discovers_and_stores_instagram_account(
         self,
         short_token_mock,
@@ -228,7 +234,20 @@ class SocialPublishingMVPAPITestCase(APITestCase):
                 reverse("meta-connection-callback"),
                 {"code": "test-code", "state": oauth_state.state},
             )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        redirect_parts = urlsplit(response["Location"])
+        self.assertEqual(
+            f"{redirect_parts.scheme}://{redirect_parts.netloc}{redirect_parts.path}",
+            "http://localhost:5173/social-media",
+        )
+        self.assertEqual(
+            parse_qs(redirect_parts.query),
+            {
+                "meta_connection": ["success"],
+                "connected_count": ["2"],
+                "warning_count": ["0"],
+            },
+        )
         instagram = SocialAccount.objects.get(
             agency=self.agency,
             platform=SocialAccount.PLATFORM_INSTAGRAM,
@@ -236,6 +255,58 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         )
         self.assertEqual(instagram.page_id, "page-discovered")
         self.assertEqual(instagram.username, "nexorarealtyos")
+
+    @override_settings(
+        FRONTEND_SOCIAL_SUCCESS_URL="http://localhost:5173/social-media"
+    )
+    @patch(
+        "social_media.views.get_instagram_account_from_page",
+        return_value=None,
+    )
+    @patch(
+        "social_media.views.get_facebook_pages",
+        return_value=[
+            {"id": "page-warning", "name": "Page", "access_token": "page-token"}
+        ],
+    )
+    @patch(
+        "social_media.views.exchange_short_token_for_long_token",
+        return_value={"access_token": "long-token"},
+    )
+    @patch(
+        "social_media.views.exchange_code_for_short_token",
+        return_value={"access_token": "short-token"},
+    )
+    def test_oauth_callback_redirect_reports_connection_warnings(
+        self,
+        short_token_mock,
+        long_token_mock,
+        pages_mock,
+        instagram_mock,
+    ):
+        oauth_state = SocialOAuthState.create_state(
+            provider=SocialAccount.PROVIDER_META,
+            agency=self.agency,
+            user=self.owner,
+        )
+        with patch(
+            "social_media.views.subscribe_page_to_webhooks",
+            side_effect=MetaAPIError("Missing pages_messaging permission.", code=200),
+        ):
+            response = self.client.get(
+                reverse("meta-connection-callback"),
+                {"code": "test-code", "state": oauth_state.state},
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(
+            parse_qs(urlsplit(response["Location"]).query),
+            {
+                "meta_connection": ["success"],
+                "connected_count": ["1"],
+                "warning_count": ["1"],
+            },
+        )
 
     def test_cannot_select_another_agencys_social_account(self):
         other_account = SocialAccount.objects.create(

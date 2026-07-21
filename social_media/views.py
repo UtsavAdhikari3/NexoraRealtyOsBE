@@ -1,4 +1,5 @@
 import requests
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -24,6 +25,29 @@ from .services.meta import (
     subscribe_page_to_webhooks,
 )
 from .services.publishing import publish_social_post
+
+
+def build_social_frontend_redirect_url(**result_params):
+    """Add a non-sensitive OAuth result to the configured CRM return URL."""
+    frontend_url = settings.FRONTEND_SOCIAL_SUCCESS_URL
+    parts = urlsplit(frontend_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update(
+        {
+            key: str(value)
+            for key, value in result_params.items()
+            if value is not None
+        }
+    )
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(query),
+            parts.fragment,
+        )
+    )
 
 
 class SocialPostListCreateView(generics.ListCreateAPIView):
@@ -334,13 +358,13 @@ class MetaConnectionCallbackView(APIView):
 
         oauth_state.mark_used()
 
-        serialized = SocialAccountSerializer(connected_accounts, many=True)
-
-        return Response({
-            "detail": "Meta connection completed.",
-            "connected_accounts": serialized.data,
-            "warnings": connection_warnings,
-        })
+        return redirect(
+            build_social_frontend_redirect_url(
+                meta_connection="success",
+                connected_count=len(connected_accounts),
+                warning_count=len(connection_warnings),
+            )
+        )
 
 
 class SocialAccountListView(generics.ListAPIView):
