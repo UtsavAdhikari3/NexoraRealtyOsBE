@@ -209,7 +209,7 @@ META_LOGIN_CONFIG_ID = os.getenv("META_LOGIN_CONFIG_ID")
 META_WEBHOOK_VERIFY_TOKEN = os.getenv("META_WEBHOOK_VERIFY_TOKEN", "")
 FRONTEND_SOCIAL_SUCCESS_URL = os.getenv(
     "FRONTEND_SOCIAL_SUCCESS_URL",
-    "http://localhost:3000/dashboard/social"
+    "http://localhost:5173/social-media"
 )
 PUBLIC_API_BASE_URL = os.getenv("PUBLIC_API_BASE_URL", "")
 INSTAGRAM_CONTAINER_POLL_ATTEMPTS = int(
