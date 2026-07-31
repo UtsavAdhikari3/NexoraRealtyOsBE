@@ -100,7 +100,10 @@ Cancellation requires a reason. Completing a visit records `completed_at` and mo
 | GET | `/api/social-posts/accounts/` | Connected accounts |
 | POST | `/api/social-posts/accounts/{id}/disconnect/` | Disconnect account |
 
-Scheduled posts require both `scheduled_at` and `social_account`. Set `target_platforms` to `['facebook', 'instagram']` for scheduled cross-posting.
+Scheduled posts require both `scheduled_at` and `social_account`. In JSON, set
+`target_platforms` to `["facebook", "instagram"]` for scheduled cross-posting;
+it is an array, not a string. When uploading an image with multipart form-data,
+repeat the `target_platforms` key once for each platform.
 
 For immediate cross-posting, call:
 

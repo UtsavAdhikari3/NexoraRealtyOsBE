@@ -277,6 +277,7 @@ SPECTACULAR_SETTINGS = {
         "AreaUnitEnum": "properties.models.AREA_UNIT_CHOICES",
         "SocialPostPlatformEnum": "social_media.models.SOCIAL_POST_PLATFORM_CHOICES",
         "SocialAccountPlatformEnum": "social_media.models.SOCIAL_ACCOUNT_PLATFORM_CHOICES",
+        "SocialPublishPlatformEnum": "social_media.models.SOCIAL_PUBLISH_PLATFORM_CHOICES",
         "ConversationStatusEnum": "crm_inbox.models.Conversation.STATUS_CHOICES",
         "MessageDeliveryStatusEnum": "crm_inbox.models.SocialMessage.STATUS_CHOICES",
     },

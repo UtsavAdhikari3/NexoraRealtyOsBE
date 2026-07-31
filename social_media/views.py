@@ -23,6 +23,8 @@ from .services.meta import (
     get_instagram_account_from_page,
     MetaAPIError,
     subscribe_page_to_webhooks,
+    update_facebook_post,
+    delete_facebook_post,
 )
 from .services.publishing import publish_social_post
 
@@ -111,6 +113,124 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
             "property",
             "created_by",
         )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        next_caption = serializer.validated_data.get("caption", instance.caption)
+        if next_caption != instance.caption:
+            facebook_results = instance.publish_results.select_related(
+                "social_account"
+            ).filter(
+                platform=SocialAccount.PLATFORM_FACEBOOK,
+                status="published",
+            )
+            for publish_result in facebook_results:
+                if not publish_result.external_post_id:
+                    return Response(
+                        {
+                            "detail": (
+                                "The published Facebook post ID is missing, so the "
+                                "caption was not changed locally."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                try:
+                    update_facebook_post(
+                        post_id=publish_result.external_post_id,
+                        page_access_token=publish_result.social_account.access_token,
+                        message=next_caption,
+                    )
+                except MetaAPIError as exc:
+                    return Response(
+                        {
+                            "detail": (
+                                "Facebook rejected the post update. The local post "
+                                "was left unchanged."
+                            ),
+                            "meta_error": {
+                                "message": str(exc),
+                                "code": exc.code,
+                                "type": exc.error_type,
+                            },
+                        },
+                        status=status.HTTP_502_BAD_GATEWAY,
+                    )
+                except requests.RequestException:
+                    return Response(
+                        {
+                            "detail": (
+                                "Facebook is temporarily unreachable. The local post "
+                                "was left unchanged."
+                            )
+                        },
+                        status=status.HTTP_502_BAD_GATEWAY,
+                    )
+
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        facebook_results = instance.publish_results.select_related(
+            "social_account"
+        ).filter(
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status="published",
+        )
+
+        for publish_result in facebook_results:
+            if not publish_result.external_post_id:
+                return Response(
+                    {
+                        "detail": (
+                            "The published Facebook post ID is missing, so the post "
+                            "was not deleted locally."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            try:
+                delete_facebook_post(
+                    post_id=publish_result.external_post_id,
+                    page_access_token=publish_result.social_account.access_token,
+                )
+            except MetaAPIError as exc:
+                return Response(
+                    {
+                        "detail": (
+                            "Facebook rejected the post deletion. The local post was "
+                            "left unchanged."
+                        ),
+                        "meta_error": {
+                            "message": str(exc),
+                            "code": exc.code,
+                            "type": exc.error_type,
+                        },
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            except requests.RequestException:
+                return Response(
+                    {
+                        "detail": (
+                            "Facebook is temporarily unreachable. The local post was "
+                            "left unchanged."
+                        )
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SocialPostPublishView(APIView):

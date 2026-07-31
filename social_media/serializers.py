@@ -1,7 +1,11 @@
 from rest_framework import serializers
 
 from properties.models import Property
-from .models import SocialPost, SocialPublishResult
+from .models import (
+    SOCIAL_PUBLISH_PLATFORM_CHOICES,
+    SocialPost,
+    SocialPublishResult,
+)
 
 
 class SocialPublishResultSerializer(serializers.ModelSerializer):
@@ -28,6 +32,17 @@ class SocialPostSerializer(serializers.ModelSerializer):
     property_title = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     publish_results = SocialPublishResultSerializer(many=True, read_only=True)
+    target_platforms = serializers.ListField(
+        child=serializers.ChoiceField(
+            choices=SOCIAL_PUBLISH_PLATFORM_CHOICES
+        ),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "Platforms to publish to. Use an array in JSON, or repeat the "
+            "target_platforms form-data key for multipart requests."
+        ),
+    )
 
     class Meta:
         model = SocialPost
@@ -92,12 +107,6 @@ class SocialPostSerializer(serializers.ModelSerializer):
         return value
 
     def validate_target_platforms(self, value):
-        allowed = {SocialPost.PLATFORM_FACEBOOK, SocialPost.PLATFORM_INSTAGRAM}
-        invalid = set(value) - allowed
-        if invalid:
-            raise serializers.ValidationError(
-                f"Unsupported target platforms: {', '.join(sorted(invalid))}."
-            )
         return list(dict.fromkeys(value))
 
     def validate(self, attrs):
@@ -129,7 +138,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
 class SocialPublishRequestSerializer(serializers.Serializer):
     platforms = serializers.ListField(
         child=serializers.ChoiceField(
-            choices=[SocialPost.PLATFORM_FACEBOOK, SocialPost.PLATFORM_INSTAGRAM]
+            choices=SOCIAL_PUBLISH_PLATFORM_CHOICES
         ),
         required=False,
         allow_empty=False,

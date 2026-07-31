@@ -181,6 +181,35 @@ def publish_facebook_photo_post(
     return response.json()
 
 
+def update_facebook_post(post_id, page_access_token, message):
+    response = requests.post(
+        f"{graph_base_url()}/{post_id}",
+        data={
+            "message": message,
+            "access_token": page_access_token,
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    data = response.json()
+    if not data.get("success"):
+        raise MetaAPIError("Meta did not confirm the Facebook post update.")
+    return data
+
+
+def delete_facebook_post(post_id, page_access_token):
+    response = requests.delete(
+        f"{graph_base_url()}/{post_id}",
+        data={"access_token": page_access_token},
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    data = response.json()
+    if not data.get("success"):
+        raise MetaAPIError("Meta did not confirm the Facebook post deletion.")
+    return data
+
+
 def create_instagram_image_container(
     instagram_account_id,
     page_access_token,

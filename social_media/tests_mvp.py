@@ -327,3 +327,139 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_target_platforms_requires_a_list_in_json(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            reverse("social-post-detail", kwargs={"pk": self.post.id}),
+            {"target_platforms": "facebook"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["target_platforms"][0].code,
+            "not_a_list",
+        )
+
+    def test_target_platforms_accepts_and_deduplicates_a_json_list(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            reverse("social-post-detail", kwargs={"pk": self.post.id}),
+            {"target_platforms": ["facebook", "instagram", "facebook"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["target_platforms"], ["facebook", "instagram"])
+
+    @patch(
+        "social_media.views.update_facebook_post",
+        return_value={"success": True},
+    )
+    def test_edit_published_facebook_post_updates_meta_before_local_post(
+        self,
+        update_mock,
+    ):
+        self.post.status = SocialPost.STATUS_PUBLISHED
+        self.post.save(update_fields=["status"])
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            reverse("social-post-detail", kwargs={"pk": self.post.id}),
+            {"caption": "Updated property caption"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.caption, "Updated property caption")
+        update_mock.assert_called_once_with(
+            post_id="page-123_456",
+            page_access_token="test-token",
+            message="Updated property caption",
+        )
+
+    @patch(
+        "social_media.views.update_facebook_post",
+        side_effect=MetaAPIError("Token expired", code=190),
+    )
+    def test_edit_keeps_local_caption_when_facebook_update_fails(self, update_mock):
+        self.post.status = SocialPost.STATUS_PUBLISHED
+        self.post.save(update_fields=["status"])
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            reverse("social-post-detail", kwargs={"pk": self.post.id}),
+            {"caption": "Should not be saved"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.caption, "New property available")
+        self.assertEqual(response.data["meta_error"]["code"], 190)
+
+    @patch(
+        "social_media.views.delete_facebook_post",
+        return_value={"success": True},
+    )
+    def test_delete_published_facebook_post_deletes_meta_before_local_post(
+        self,
+        delete_mock,
+    ):
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(SocialPost.objects.filter(pk=self.post.id).exists())
+        delete_mock.assert_called_once_with(
+            post_id="page-123_456",
+            page_access_token="test-token",
+        )
+
+    @patch(
+        "social_media.views.delete_facebook_post",
+        side_effect=MetaAPIError("Permission denied", code=200),
+    )
+    def test_delete_keeps_local_post_when_facebook_delete_fails(self, delete_mock):
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertTrue(SocialPost.objects.filter(pk=self.post.id).exists())
+        self.assertEqual(response.data["meta_error"]["code"], 200)
