@@ -251,6 +251,7 @@ class SocialPublishResult(models.Model):
     )
     container_id = models.CharField(max_length=255, blank=True)
     external_post_id = models.CharField(max_length=255, blank=True)
+    external_media_id = models.CharField(max_length=255, blank=True)
     error_message = models.TextField(blank=True)
     attempt_count = models.PositiveIntegerField(default=0)
     published_at = models.DateTimeField(null=True, blank=True)

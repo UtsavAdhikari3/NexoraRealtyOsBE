@@ -210,6 +210,24 @@ def delete_facebook_post(post_id, page_access_token):
     return data
 
 
+def get_facebook_post_photo_id(post_id, page_access_token):
+    response = requests.get(
+        f"{graph_base_url()}/{post_id}",
+        params={
+            "fields": "attachments{target}",
+            "access_token": page_access_token,
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    attachments = response.json().get("attachments", {}).get("data", [])
+    for attachment in attachments:
+        media_id = attachment.get("target", {}).get("id")
+        if media_id:
+            return media_id
+    raise MetaAPIError("Meta did not return the Facebook photo ID for this post.")
+
+
 def create_instagram_image_container(
     instagram_account_id,
     page_access_token,

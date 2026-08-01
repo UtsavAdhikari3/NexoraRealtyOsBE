@@ -175,6 +175,7 @@ def publish_target(post, account):
                         ),
                         message=post.caption,
                     )
+                result.external_media_id = data.get("id", "")
                 result.external_post_id = data.get("post_id") or data.get("id", "")
             else:
                 data = publish_facebook_feed_post(
@@ -183,6 +184,7 @@ def publish_target(post, account):
                     message=post.caption,
                 )
                 result.external_post_id = data.get("id", "")
+                result.external_media_id = ""
             result.container_id = ""
         elif account.platform == SocialAccount.PLATFORM_INSTAGRAM:
             result.container_id, result.external_post_id = publish_instagram_image(
@@ -190,6 +192,7 @@ def publish_target(post, account):
                 account,
                 result=result,
             )
+            result.external_media_id = result.external_post_id
         else:
             raise ValueError(f"Publishing to {account.platform} is not supported.")
 

@@ -102,7 +102,7 @@ class SocialPublishingMVPAPITestCase(APITestCase):
     )
     @patch(
         "social_media.services.publishing.publish_facebook_photo_post",
-        return_value={"id": "page-123_456"},
+        return_value={"id": "photo-456", "post_id": "page-123_456"},
     )
     @patch("social_media.services.publishing.settings.PUBLIC_API_BASE_URL", "https://api.example.com")
     def test_publish_same_post_to_facebook_and_instagram(
@@ -133,6 +133,14 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         self.assertEqual(
             results.get(platform="instagram").container_id,
             "ig-container-123",
+        )
+        self.assertEqual(
+            results.get(platform="facebook").external_media_id,
+            "photo-456",
+        )
+        self.assertEqual(
+            results.get(platform="facebook").external_post_id,
+            "page-123_456",
         )
         facebook_mock.assert_called_once()
         create_container_mock.assert_called_once()
@@ -439,6 +447,69 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         self.assertFalse(SocialPost.objects.filter(pk=self.post.id).exists())
         delete_mock.assert_called_once_with(
             post_id="page-123_456",
+            page_access_token="test-token",
+        )
+
+    @patch(
+        "social_media.views.delete_facebook_post",
+        return_value={"success": True},
+    )
+    def test_delete_facebook_photo_targets_saved_photo_id(self, delete_mock):
+        self.attach_test_image()
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_post-456",
+            external_media_id="photo-456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        delete_mock.assert_called_once_with(
+            post_id="photo-456",
+            page_access_token="test-token",
+        )
+
+    @patch(
+        "social_media.views.delete_facebook_post",
+        return_value={"success": True},
+    )
+    @patch(
+        "social_media.views.get_facebook_post_photo_id",
+        return_value="legacy-photo-456",
+    )
+    def test_delete_legacy_facebook_photo_resolves_photo_id(
+        self,
+        photo_id_mock,
+        delete_mock,
+    ):
+        self.attach_test_image()
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_post-456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        photo_id_mock.assert_called_once_with(
+            post_id="page-123_post-456",
+            page_access_token="test-token",
+        )
+        delete_mock.assert_called_once_with(
+            post_id="legacy-photo-456",
             page_access_token="test-token",
         )
 

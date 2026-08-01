@@ -21,6 +21,7 @@ class SocialPublishResultSerializer(serializers.ModelSerializer):
             "status",
             "container_id",
             "external_post_id",
+            "external_media_id",
             "error_message",
             "attempt_count",
             "published_at",

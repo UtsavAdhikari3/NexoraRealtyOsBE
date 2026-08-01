@@ -25,6 +25,7 @@ from .services.meta import (
     subscribe_page_to_webhooks,
     update_facebook_post,
     delete_facebook_post,
+    get_facebook_post_photo_id,
 )
 from .services.publishing import publish_social_post
 
@@ -199,8 +200,16 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
                     status=status.HTTP_409_CONFLICT,
                 )
             try:
+                delete_target_id = publish_result.external_media_id
+                if instance.image and not delete_target_id:
+                    delete_target_id = get_facebook_post_photo_id(
+                        post_id=publish_result.external_post_id,
+                        page_access_token=publish_result.social_account.access_token,
+                    )
+                if not delete_target_id:
+                    delete_target_id = publish_result.external_post_id
                 delete_facebook_post(
-                    post_id=publish_result.external_post_id,
+                    post_id=delete_target_id,
                     page_access_token=publish_result.social_account.access_token,
                 )
             except MetaAPIError as exc:
