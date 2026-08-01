@@ -1,6 +1,7 @@
 from unittest.mock import patch
 from io import BytesIO
 
+import requests
 from django.core.files.base import ContentFile
 from django.test import override_settings
 from django.urls import reverse
@@ -360,6 +361,47 @@ class SocialPublishingMVPAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["target_platforms"], ["facebook", "instagram"])
+
+    @override_settings(PUBLIC_API_BASE_URL="http://api.example.com")
+    def test_instagram_publish_rejects_non_https_public_media_origin(self):
+        self.attach_test_image()
+        self.post.social_account = self.instagram_account
+        self.post.platform = SocialPost.PLATFORM_INSTAGRAM
+        self.post.save(update_fields=["social_account", "platform"])
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            reverse("social-post-publish", kwargs={"pk": self.post.id}),
+            {"platforms": ["instagram"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertIn("public HTTPS URL", response.data["error_message"])
+
+    @patch(
+        "social_media.services.publishing.create_instagram_image_container",
+        side_effect=requests.Timeout("Meta timed out"),
+    )
+    def test_instagram_timeout_returns_actionable_error(self, container_mock):
+        self.attach_test_image()
+        self.post.social_account = self.instagram_account
+        self.post.platform = SocialPost.PLATFORM_INSTAGRAM
+        self.post.save(update_fields=["social_account", "platform"])
+        self.client.force_authenticate(user=self.owner)
+
+        with patch(
+            "social_media.services.publishing.get_public_image_url",
+            return_value="https://api.example.com/media/property.jpg",
+        ):
+            response = self.client.post(
+                reverse("social-post-publish", kwargs={"pk": self.post.id}),
+                {"platforms": ["instagram"]},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.assertIn("Meta timed out", response.data["error_message"])
 
     @patch(
         "social_media.views.update_facebook_post",

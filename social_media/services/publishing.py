@@ -3,6 +3,7 @@ import mimetypes
 from pathlib import PurePosixPath
 from urllib.parse import urljoin, urlsplit
 
+import requests
 from django.conf import settings
 from django.utils import timezone
 from PIL import Image, UnidentifiedImageError
@@ -26,7 +27,12 @@ def get_public_media_url(post):
         redirect = urlsplit(settings.META_REDIRECT_URI)
         base_url = f"{redirect.scheme}://{redirect.netloc}"
 
-    if not base_url or urlsplit(base_url).hostname in {"localhost", "127.0.0.1"}:
+    parsed_base_url = urlsplit(base_url)
+    if (
+        not base_url
+        or parsed_base_url.scheme != "https"
+        or parsed_base_url.hostname in {"localhost", "127.0.0.1"}
+    ):
         raise ValueError(
             "Configure PUBLIC_API_BASE_URL with a public HTTPS URL so Meta can fetch the image."
         )
@@ -102,9 +108,12 @@ def publish_instagram_image(post, account, result=None):
 
     attempts = settings.INSTAGRAM_CONTAINER_POLL_ATTEMPTS
     interval = settings.INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS
+    deadline = time.monotonic() + settings.INSTAGRAM_PUBLISH_DEADLINE_SECONDS
     last_status = None
 
     for attempt in range(attempts):
+        if time.monotonic() >= deadline:
+            break
         status_data = get_instagram_container_status(
             container_id=container_id,
             page_access_token=account.access_token,
@@ -118,11 +127,14 @@ def publish_instagram_image(post, account, result=None):
                 or f"Instagram media container entered {last_status} status."
             )
         if attempt < attempts - 1 and interval:
-            time.sleep(interval)
-    else:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(interval, remaining))
+    if last_status != "FINISHED":
         raise ValueError(
-            f"Instagram media container was not ready after {attempts} checks "
-            f"(last status: {last_status or 'unknown'})."
+            "Instagram media processing did not finish before the publishing "
+            f"deadline (last status: {last_status or 'unknown'}). Verify that "
+            "the uploaded image URL is publicly reachable over HTTPS."
         )
 
     publish_data = publish_instagram_container(
@@ -203,6 +215,19 @@ def publish_target(post, account):
         result.published_at = timezone.now()
         result.error_message = ""
         result.save()
+        return result
+    except requests.Timeout:
+        result.status = SocialPublishResult.STATUS_FAILED
+        if account.platform == SocialAccount.PLATFORM_INSTAGRAM:
+            result.error_message = (
+                "Meta timed out while publishing to Instagram. Verify that the uploaded "
+                "image URL is publicly reachable over HTTPS, then retry."
+            )
+        else:
+            result.error_message = (
+                f"Meta timed out while publishing to {account.platform}. Please retry."
+            )
+        result.save(update_fields=["status", "error_message", "updated_at"])
         return result
     except Exception as exc:
         result.status = SocialPublishResult.STATUS_FAILED

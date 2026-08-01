@@ -41,6 +41,13 @@ def meta_request_timeout():
     )
 
 
+def instagram_request_timeout():
+    return (
+        settings.META_HTTP_CONNECT_TIMEOUT_SECONDS,
+        settings.META_INSTAGRAM_READ_TIMEOUT_SECONDS,
+    )
+
+
 def build_meta_oauth_url(state):
     params = {
         "client_id": settings.META_APP_ID,
@@ -241,7 +248,7 @@ def create_instagram_image_container(
             "caption": caption,
             "access_token": page_access_token,
         },
-        timeout=meta_request_timeout(),
+        timeout=instagram_request_timeout(),
     )
     raise_for_meta_error(response)
     return response.json()
@@ -252,7 +259,7 @@ def get_instagram_container_status(container_id, page_access_token):
         f"{graph_base_url()}/{container_id}",
         params={"fields": "status_code,status"},
         headers={"Authorization": f"Bearer {page_access_token}"},
-        timeout=meta_request_timeout(),
+        timeout=instagram_request_timeout(),
     )
     raise_for_meta_error(response)
     return response.json()
@@ -269,7 +276,7 @@ def publish_instagram_container(
             "creation_id": container_id,
             "access_token": page_access_token,
         },
-        timeout=meta_request_timeout(),
+        timeout=instagram_request_timeout(),
     )
     raise_for_meta_error(response)
     return response.json()
