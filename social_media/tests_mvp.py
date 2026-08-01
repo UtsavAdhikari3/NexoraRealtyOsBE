@@ -264,6 +264,7 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         )
         self.assertEqual(instagram.page_id, "page-discovered")
         self.assertEqual(instagram.username, "nexorarealtyos")
+        self.assertEqual(instagram.user_access_token, "long-token")
 
     @override_settings(
         FRONTEND_SOCIAL_SUCCESS_URL="http://localhost:5173/social-media"
@@ -464,6 +465,48 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         self.assertEqual(self.post.caption, "New property available")
         self.assertEqual(response.data["meta_error"]["code"], 190)
 
+    def test_edit_published_instagram_caption_is_rejected_without_local_change(self):
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.instagram_account,
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="ig-media-456",
+            external_media_id="ig-media-456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            reverse("social-post-detail", kwargs={"pk": self.post.id}),
+            {"caption": "Instagram cannot apply this caption"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["code"], "instagram_caption_edit_unsupported")
+        self.post.refresh_from_db()
+        self.assertEqual(self.post.caption, "New property available")
+
+    def test_replacing_published_instagram_image_is_rejected(self):
+        self.attach_test_image()
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.instagram_account,
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="ig-media-456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            reverse("social-post-detail", kwargs={"pk": self.post.id}),
+            {"image": None},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["code"], "published_media_is_immutable")
+
     @patch(
         "social_media.views.delete_facebook_post",
         return_value={"success": True},
@@ -491,6 +534,52 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             post_id="page-123_456",
             page_access_token="test-token",
         )
+
+    @patch(
+        "social_media.views.delete_instagram_media",
+        return_value={"success": True, "deleted_id": "ig-media-456"},
+    )
+    def test_delete_published_instagram_media_before_local_post(self, delete_mock):
+        self.instagram_account.user_access_token = "test-user-token"
+        self.instagram_account.save(update_fields=["user_access_token"])
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.instagram_account,
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="ig-media-456",
+            external_media_id="ig-media-456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(SocialPost.objects.filter(pk=self.post.id).exists())
+        delete_mock.assert_called_once_with(
+            media_id="ig-media-456",
+            user_access_token="test-user-token",
+        )
+
+    def test_instagram_delete_requires_reconnect_for_management_token(self):
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.instagram_account,
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="ig-media-456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["code"], "instagram_reconnect_required")
+        self.assertTrue(SocialPost.objects.filter(pk=self.post.id).exists())
 
     @patch(
         "social_media.views.delete_facebook_post",

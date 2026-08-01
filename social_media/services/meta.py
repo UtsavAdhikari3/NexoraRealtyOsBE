@@ -68,6 +68,7 @@ def build_meta_oauth_url(state):
             "pages_manage_posts",
             "instagram_basic",
             "instagram_content_publish",
+            "instagram_manage_contents",
             "pages_messaging",
             "instagram_manage_messages",
         ])
@@ -214,6 +215,20 @@ def delete_facebook_post(post_id, page_access_token):
     data = response.json()
     if not data.get("success"):
         raise MetaAPIError("Meta did not confirm the Facebook post deletion.")
+    return data
+
+
+def delete_instagram_media(media_id, user_access_token):
+    version = settings.META_INSTAGRAM_MANAGEMENT_VERSION
+    response = requests.delete(
+        f"https://graph.facebook.com/{version}/{media_id}",
+        data={"access_token": user_access_token},
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    data = response.json()
+    if not data.get("success"):
+        raise MetaAPIError("Meta did not confirm the Instagram media deletion.")
     return data
 
 

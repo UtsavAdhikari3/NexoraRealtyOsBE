@@ -147,6 +147,7 @@ class SocialAccount(models.Model):
     page_id = models.CharField(max_length=255, blank=True, null=True)
 
     access_token = models.TextField()
+    user_access_token = models.TextField(blank=True)
     token_expires_at = models.DateTimeField(blank=True, null=True)
     webhook_subscription_status = models.CharField(max_length=30, blank=True)
     webhook_subscribed_at = models.DateTimeField(null=True, blank=True)

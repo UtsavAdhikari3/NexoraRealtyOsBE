@@ -25,6 +25,7 @@ from .services.meta import (
     subscribe_page_to_webhooks,
     update_facebook_post,
     delete_facebook_post,
+    delete_instagram_media,
     get_facebook_post_photo_id,
 )
 from .services.publishing import publish_social_post
@@ -125,8 +126,34 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
         serializer.is_valid(raise_exception=True)
 
+        published_results = instance.publish_results.filter(status="published")
+        if "image" in serializer.validated_data and published_results.exists():
+            return Response(
+                {
+                    "detail": (
+                        "Published social-media images cannot be replaced. Create a "
+                        "new post if you need to publish different media."
+                    ),
+                    "code": "published_media_is_immutable",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         next_caption = serializer.validated_data.get("caption", instance.caption)
         if next_caption != instance.caption:
+            if published_results.filter(
+                platform=SocialAccount.PLATFORM_INSTAGRAM
+            ).exists():
+                return Response(
+                    {
+                        "detail": (
+                            "Instagram does not support editing the caption of "
+                            "published media. The local post was left unchanged."
+                        ),
+                        "code": "instagram_caption_edit_unsupported",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             facebook_results = instance.publish_results.select_related(
                 "social_account"
             ).filter(
@@ -181,6 +208,71 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        instagram_results = instance.publish_results.select_related(
+            "social_account"
+        ).filter(
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            status="published",
+        )
+
+        for publish_result in instagram_results:
+            media_id = (
+                publish_result.external_media_id
+                or publish_result.external_post_id
+            )
+            if not media_id:
+                return Response(
+                    {
+                        "detail": (
+                            "The published Instagram media ID is missing, so the post "
+                            "was not deleted locally."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            management_token = publish_result.social_account.user_access_token
+            if not management_token:
+                return Response(
+                    {
+                        "detail": (
+                            "Reconnect Meta before deleting this Instagram post. "
+                            "Nexora needs the instagram_manage_contents permission."
+                        ),
+                        "code": "instagram_reconnect_required",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            try:
+                delete_instagram_media(
+                    media_id=media_id,
+                    user_access_token=management_token,
+                )
+            except MetaAPIError as exc:
+                return Response(
+                    {
+                        "detail": (
+                            "Instagram rejected the media deletion. The local post "
+                            "was left unchanged."
+                        ),
+                        "meta_error": {
+                            "message": str(exc),
+                            "code": exc.code,
+                            "type": exc.error_type,
+                        },
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+            except requests.RequestException:
+                return Response(
+                    {
+                        "detail": (
+                            "Instagram is temporarily unreachable. The local post was "
+                            "left unchanged."
+                        )
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
         facebook_results = instance.publish_results.select_related(
             "social_account"
         ).filter(
@@ -403,6 +495,7 @@ class MetaConnectionCallbackView(APIView):
                     "username": None,
                     "page_id": page_id,
                     "access_token": page_access_token,
+                    "user_access_token": long_token,
                     "status": SocialAccount.STATUS_CONNECTED,
                     "connected_by": oauth_state.user,
                 },
@@ -473,6 +566,7 @@ class MetaConnectionCallbackView(APIView):
                         "username": ig_username,
                         "page_id": page_id,
                         "access_token": page_access_token,
+                        "user_access_token": long_token,
                         "status": SocialAccount.STATUS_CONNECTED,
                         "connected_by": oauth_state.user,
                         "webhook_subscription_status": (
