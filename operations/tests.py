@@ -11,7 +11,7 @@ from agencies.models import Agency
 from leads.models import Lead
 from properties.models import Property
 from users.models import AgencyUser
-from .models import AuditLog, Contact, Deal, Invitation, Notification, Offer, SavedProperty, Task
+from .models import AgentReview, AuditLog, Contact, Deal, Invitation, Notification, Offer, PublicSubmission, SavedProperty, Task
 
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
@@ -95,10 +95,87 @@ class OperationsApiTests(APITestCase):
         login = self.client.post(f"/api/public/agencies/{self.agency.slug}/customers/login/", {"email": "customer@example.com", "password": "CustomerStrong123!"}, format="json")
         self.assertEqual(login.status_code, status.HTTP_200_OK)
 
+    def test_unpublished_website_rejects_customer_registration(self):
+        self.agency.is_website_published = False
+        self.agency.save(update_fields=["is_website_published"])
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            f"/api/public/agencies/{self.agency.slug}/customers/",
+            {
+                "full_name": "Hidden Customer",
+                "email": "hidden@example.com",
+                "password": "CustomerStrong123!",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_public_appointment_notifies_agent(self):
         response = self.client.post(f"/api/public/agencies/{self.agency.slug}/appointments/", {"agent": self.agent.id, "property": self.property.id, "full_name": "Visitor", "email": "visitor@example.com", "starts_at": (timezone.now() + timedelta(days=1)).isoformat(), "ends_at": (timezone.now() + timedelta(days=1, minutes=30)).isoformat()}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(Notification.objects.filter(user=self.agent, category="appointment").exists())
+
+    def test_public_valuation_submission_creates_crm_lead(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            f"/api/public/agencies/{self.agency.slug}/submissions/",
+            {
+                "kind": "valuation",
+                "full_name": "Seller Person",
+                "email": "seller@example.com",
+                "phone": "9800000042",
+                "message": "Please value my home.",
+                "metadata": {"address": "Lalitpur", "property_type": "house"},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        submission = PublicSubmission.objects.get(id=response.data["id"])
+        self.assertIsNotNone(submission.lead_id)
+        self.assertEqual(submission.lead.custom_data["public_submission_kind"], "valuation")
+        self.assertTrue(Notification.objects.filter(category="website_submission").exists())
+
+    def test_newsletter_submission_does_not_merge_blank_phone_leads(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            f"/api/public/agencies/{self.agency.slug}/submissions/",
+            {"kind": "newsletter", "email": "reader@example.com", "metadata": {"preference": "Luxury listings"}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(PublicSubmission.objects.get(id=response.data["id"]).lead_id)
+
+    def test_agent_review_requires_moderation_before_publication(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            f"/api/public/agencies/{self.agency.slug}/agents/{self.agent.id}/reviews/",
+            {"reviewer_name": "Buyer", "reviewer_email": "buyer@example.com", "rating": 5, "comment": "Excellent service."},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        detail_url = f"/api/public/agencies/{self.agency.license_number}/agents/{self.agent.id}/"
+        self.assertEqual(self.client.get(detail_url).data["reviews"], [])
+
+        review = AgentReview.objects.get(id=response.data["id"])
+        self.client.force_authenticate(self.owner)
+        approved = self.client.patch(f"/api/operations/agent-reviews/{review.id}/", {"is_approved": True}, format="json")
+        self.assertEqual(approved.status_code, status.HTTP_200_OK)
+        public_agent = self.client.get(detail_url).data
+        self.assertEqual(public_agent["rating"], 5.0)
+        self.assertEqual(public_agent["reviews"][0]["comment"], "Excellent service.")
+
+        review.refresh_from_db()
+        approved_by_id = review.approved_by_id
+        approved_at = review.approved_at
+        renamed = self.client.patch(
+            f"/api/operations/agent-reviews/{review.id}/",
+            {"title": "Updated title"},
+            format="json",
+        )
+        self.assertEqual(renamed.status_code, status.HTTP_200_OK)
+        review.refresh_from_db()
+        self.assertEqual(review.approved_by_id, approved_by_id)
+        self.assertEqual(review.approved_at, approved_at)
 
     def test_matching_scores_relevant_property(self):
         response = self.client.get(f"/api/operations/matching/leads/{self.lead.id}/")

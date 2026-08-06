@@ -34,6 +34,7 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DEBUG: ${DEBUG:-True}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1},api
       GUNICORN_TIMEOUT: "180"
       GUNICORN_WORKERS: "2"
       GUNICORN_THREADS: "4"
@@ -73,6 +74,31 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  storefront:
+    build:
+      context: ../RealEstateStandAlone
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${STOREFRONT_PUBLIC_API_URL:-http://localhost:8000/api}
+        NEXT_PUBLIC_DEFAULT_AGENCY_SLUG: ${STOREFRONT_DEFAULT_AGENCY_SLUG:-nexora-realty-nr-001}
+        NEXT_PUBLIC_AGENCY_LICENSE_NUMBER: ${STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER:-NR-001}
+    container_name: real_estate_storefront
+    ports:
+      - "3000:3000"
+    environment:
+      API_BASE_URL: http://api:8000/api
+      NEXT_PUBLIC_API_BASE_URL: ${STOREFRONT_PUBLIC_API_URL:-http://localhost:8000/api}
+      NEXT_PUBLIC_DEFAULT_AGENCY_SLUG: ${STOREFRONT_DEFAULT_AGENCY_SLUG:-nexora-realty-nr-001}
+      NEXT_PUBLIC_AGENCY_LICENSE_NUMBER: ${STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER:-NR-001}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   postgres_data:

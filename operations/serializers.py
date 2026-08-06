@@ -8,8 +8,8 @@ from agencies.models import Agency
 from .models import (
     Appointment, AppointmentAvailability, AuditLog, Contact, CustomerProfile,
     CustomFieldDefinition, Deal, Document, Invitation, Lease, Notification,
-    Offer, Owner, Payment, PipelineStage, SavedProperty, SavedSearch,
-    Subscription, SubscriptionPlan, Task,
+    AgentReview, Offer, Owner, Payment, PipelineStage, PublicSubmission,
+    SavedProperty, SavedSearch, Subscription, SubscriptionPlan, Task,
 )
 from .validators import validate_custom_data
 
@@ -293,6 +293,64 @@ class SavedSearchSerializer(serializers.ModelSerializer):
         model = SavedSearch
         exclude = ["agency", "customer"]
         read_only_fields = ["last_notified_at", "created_at", "updated_at"]
+
+
+class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSerializer):
+    property_title = serializers.CharField(source="property.title", read_only=True)
+    agent_name = serializers.CharField(source="agent.full_name", read_only=True)
+    lead_name = serializers.CharField(source="lead.full_name", read_only=True)
+    relation_fields = ("property", "agent", "lead")
+
+    class Meta:
+        model = PublicSubmission
+        exclude = ["agency"]
+        read_only_fields = [
+            "lead", "ip_address", "user_agent", "processed_at", "created_at", "updated_at",
+        ]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        kind = attrs.get("kind", getattr(self.instance, "kind", ""))
+        full_name = (attrs.get("full_name") or "").strip()
+        email = (attrs.get("email") or "").strip()
+        phone = (attrs.get("phone") or "").strip()
+        metadata = attrs.get("metadata") or {}
+
+        errors = {}
+        if kind != "newsletter" and not full_name:
+            errors["full_name"] = "Full name is required."
+        if kind in {"newsletter", "buyer_guide", "career"} and not email:
+            errors["email"] = "Email is required for this submission type."
+        if kind in {"contact", "property_inquiry", "valuation", "demo"} and not (email or phone):
+            errors["phone"] = "Provide at least a phone number or email address."
+        if not isinstance(metadata, dict):
+            errors["metadata"] = "Metadata must be an object."
+        elif kind == "valuation" and not metadata.get("address"):
+            errors["metadata"] = "A valuation request must include an address."
+        if kind == "property_inquiry" and not attrs.get("property") and not (
+            isinstance(metadata, dict) and metadata.get("property_title")
+        ):
+            errors["property"] = "Choose a property."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+
+class AgentReviewSerializer(AgencyValidationMixin, serializers.ModelSerializer):
+    agent_name = serializers.CharField(source="agent.full_name", read_only=True)
+    approved_by_name = serializers.CharField(source="approved_by.full_name", read_only=True)
+    relation_fields = ("agent",)
+
+    class Meta:
+        model = AgentReview
+        exclude = ["agency"]
+        read_only_fields = ["approved_by", "approved_at", "created_at", "updated_at"]
+
+
+class PublicAgentReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AgentReview
+        fields = ["reviewer_name", "reviewer_email", "rating", "title", "comment"]
 
 
 class AppointmentAvailabilitySerializer(AgencyValidationMixin, serializers.ModelSerializer):

@@ -29,6 +29,9 @@ class PublicAgencySerializer(serializers.ModelSerializer):
             "seo_title",
             "seo_description",
             "custom_domain",
+            "website_template",
+            "website_config",
+            "is_website_published",
 
             "facebook_url",
             "instagram_url",
@@ -49,6 +52,8 @@ class PublicAgentSerializer(serializers.ModelSerializer):
     deals_closed = serializers.SerializerMethodField()
     current_listing_ids = serializers.SerializerMethodField()
     sold_property_ids = serializers.SerializerMethodField()
+    rating = serializers.SerializerMethodField()
+    reviews = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -72,6 +77,8 @@ class PublicAgentSerializer(serializers.ModelSerializer):
             "current_listing_ids",
             "sold_property_ids",
             "profile_completed",
+            "rating",
+            "reviews",
         ]
 
     def get_profile_image_url(self, obj) -> str | None:
@@ -110,6 +117,32 @@ class PublicAgentSerializer(serializers.ModelSerializer):
             if property_obj.status in ["sold", "rented"]
         )
         return [f"LP-{property_id:03d}" for property_id in property_ids]
+
+    def get_approved_reviews(self, obj):
+        if not hasattr(obj, "_approved_public_reviews"):
+            obj._approved_public_reviews = list(
+                obj.public_reviews.filter(is_approved=True).order_by("-created_at")
+            )
+        return obj._approved_public_reviews
+
+    def get_rating(self, obj) -> float:
+        reviews = self.get_approved_reviews(obj)
+        if not reviews:
+            return 0
+        return round(sum(review.rating for review in reviews) / len(reviews), 1)
+
+    def get_reviews(self, obj) -> list[dict]:
+        return [
+            {
+                "id": review.id,
+                "name": review.reviewer_name,
+                "rating": review.rating,
+                "title": review.title,
+                "comment": review.comment,
+                "created_at": review.created_at,
+            }
+            for review in self.get_approved_reviews(obj)
+        ]
 
 
 class PublicAgencyContactSerializer(serializers.Serializer):

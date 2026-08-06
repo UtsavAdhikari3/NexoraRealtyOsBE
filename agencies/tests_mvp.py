@@ -38,13 +38,35 @@ class AgencyMVPAPITestCase(APITestCase):
         self.client.force_authenticate(user=self.owner)
         response = self.client.patch(
             reverse("current-agency"),
-            {"about": "Trusted local agency", "payment_status": "cancelled"},
+            {
+                "about": "Trusted local agency",
+                "payment_status": "cancelled",
+                "website_template": "luxury-agency",
+                "website_config": {"hero_title": "Find a remarkable home"},
+                "is_website_published": True,
+            },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.agency.refresh_from_db()
         self.assertEqual(self.agency.about, "Trusted local agency")
         self.assertEqual(self.agency.payment_status, Agency.PAYMENT_PAID)
+        self.assertEqual(self.agency.website_config["hero_title"], "Find a remarkable home")
+
+    def test_public_agency_can_resolve_custom_domain(self):
+        self.agency.custom_domain = "homes.example.com"
+        self.agency.save(update_fields=["custom_domain"])
+        response = self.client.get("/api/public/agencies/by-domain/?domain=https://homes.example.com/path")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["slug"], self.agency.slug)
+
+    def test_unpublished_website_is_not_public(self):
+        self.agency.is_website_published = False
+        self.agency.save(update_fields=["is_website_published"])
+        response = self.client.get(
+            reverse("public-agency-detail-by-slug", kwargs={"slug": self.agency.slug})
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_public_agents_and_contact_capture(self):
         agents = self.client.get(

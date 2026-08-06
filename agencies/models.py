@@ -38,6 +38,9 @@ class Agency(models.Model):
     seo_title = models.CharField(max_length=70, blank=True)
     seo_description = models.CharField(max_length=180, blank=True)
     custom_domain = models.CharField(max_length=255, blank=True)
+    website_template = models.CharField(max_length=80, default="luxury-agency")
+    website_config = models.JSONField(default=dict, blank=True)
+    is_website_published = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     subscription_expires_at = models.DateTimeField(null=True, blank=True)
 

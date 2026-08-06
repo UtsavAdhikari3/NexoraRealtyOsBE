@@ -23,6 +23,7 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
 - Smart property matching, comparison, advanced reports, and agent performance
 - Custom fields and configurable lead/deal pipeline stages
 - Customer accounts, favorites, saved-search alerts, and appointment booking
+- Configurable published agency websites, custom domains, reusable content sections, public submissions, and moderated agent reviews
 - Public map search, canonical share URLs, SEO metadata, and video tours
 - Stripe Checkout, signed webhooks, billing portal, and payment history
 - Super-admin metrics and agency activation/suspension controls
@@ -42,8 +43,9 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
    - Swagger: `http://localhost:8000/api/docs/`
    - ReDoc: `http://localhost:8000/api/redoc/`
    - Health: `http://localhost:8000/api/health/`
+   - Agency storefront: `http://localhost:3000/agency/<agency-slug>`
 
-The container waits for PostgreSQL, applies migrations, collects static files, and starts Gunicorn as an unprivileged user. PostgreSQL, media, and static data use persistent Docker volumes.
+The API container waits for PostgreSQL, applies migrations, collects static files, and starts Gunicorn as an unprivileged user. Compose also builds the sibling Next.js storefront with separate browser and Docker-internal API addresses. PostgreSQL, media, and static data use persistent Docker volumes.
 
 ## Validation
 
@@ -86,6 +88,7 @@ Docker Compose includes a scheduler service that runs these jobs every five minu
 - Set `DEBUG=False`.
 - Set a strong `DJANGO_SECRET_KEY`; startup fails without one in production.
 - Set exact `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, and `CSRF_TRUSTED_ORIGINS`.
+- Set `STOREFRONT_PUBLIC_API_URL`, `STOREFRONT_DEFAULT_AGENCY_SLUG`, `STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER`, and `STOREFRONT_PUBLIC_URL` for the deployed storefront.
 - Configure SMTP and persistent/object media storage.
 - Configure `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and the three `STRIPE_PRICE_*` IDs. Point Stripe webhooks to `/api/webhooks/stripe/`.
 - Enable HTTPS redirect and secure cookies behind a trusted reverse proxy.

@@ -35,6 +35,7 @@ Public routes only expose active, paid, non-expired agencies and available publi
 |---|---|---|
 | GET | `/api/public/agencies/{license}/` | Agency profile |
 | GET | `/api/public/agencies/by-slug/{slug}/` | Agency profile by slug |
+| GET | `/api/public/agencies/by-domain/?domain={host}` | Published agency profile by custom domain |
 | GET | `/api/public/agencies/{license}/agents/` | Active public agents |
 | GET | `/api/public/agencies/{license}/agents/{id}/` | Public agent profile and listing/deal summary |
 | POST | `/api/public/agencies/{license}/contact/` | General contact lead capture |
@@ -45,6 +46,8 @@ Public routes only expose active, paid, non-expired agencies and available publi
 | POST | `/api/public/agencies/{license}/properties/{id}/inquire/` | Property inquiry |
 | POST | `/api/public/agencies/{license}/properties/{id}/request-site-visit/` | Visit request |
 | POST | `/api/public/agencies/{license}/properties/{id}/events/` | View/call/WhatsApp/Viber conversion event |
+| POST | `/api/public/agencies/{slug}/submissions/` | Contact, inquiry, valuation, newsletter, guide, career, or demo submission |
+| POST | `/api/public/agencies/{slug}/agents/{id}/reviews/` | Submit an agent review for moderation |
 
 Supported listing query parameters include `property_type`, `purpose`, `location`, `province`, `district`, `city`, `price_min`, `price_max`, `bedrooms`, `bathrooms`, `furnishing_status`, `facing_direction`, `land_area_min`, `land_area_max`, `road_access_min`, `featured`, `search`, and `ordering` (`price`, `-price`, `newest`, `oldest`).
 
