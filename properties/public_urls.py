@@ -7,10 +7,16 @@ from .public_views import (
     PublicPropertyInquiryView,
     PublicSimilarPropertiesView,
     PublicPropertyEventView,
+    PublicPropertyShareDetailView,
 )
 
 
 urlpatterns = [
+    path(
+        "agencies/by-slug/<slug:slug>/listings/<slug:share_slug>/",
+        PublicPropertyShareDetailView.as_view(),
+        name="public-property-share-detail",
+    ),
     path(
         "agencies/<str:license_number>/properties/",
         PublicPropertyListView.as_view(),

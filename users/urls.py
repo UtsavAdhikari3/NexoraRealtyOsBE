@@ -5,12 +5,24 @@ from .views import (
     VerifyLoginOTPView,
     ResendLoginOTPView,
     ThrottledTokenRefreshView,
+    PasswordResetRequestView,
+    PasswordResetConfirmView,
 )
 
 urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
     path("login/", LoginView.as_view(), name="login"),
     path("token/refresh/", ThrottledTokenRefreshView.as_view(), name="token_refresh"),
+    path(
+        "password-reset/",
+        PasswordResetRequestView.as_view(),
+        name="password-reset",
+    ),
+    path(
+        "password-reset/confirm/",
+        PasswordResetConfirmView.as_view(),
+        name="password-reset-confirm",
+    ),
     path(
         "verify-login-otp/",
         VerifyLoginOTPView.as_view(),

@@ -67,7 +67,7 @@ if not SECRET_KEY:
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",
-    ["localhost", "127.0.0.1","handled-slimness-unsightly.ngrok-free.dev","161.118.176.119"],
+    ["localhost", "127.0.0.1"],
 )
 
 
@@ -81,6 +81,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'drf_spectacular',
     'corsheaders',
     'users',
@@ -90,6 +91,7 @@ INSTALLED_APPS = [
     'site_visits',
     'social_media',
     'crm_inbox',
+    'operations',
 ]
 
 CORS_ALLOW_CREDENTIALS = env_bool("CORS_ALLOW_CREDENTIALS", True)
@@ -103,6 +105,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'operations.middleware.AuditMiddleware',
 ]
 
 CORS_ALLOW_ALL_ORIGINS = env_bool("CORS_ALLOW_ALL_ORIGINS", DEBUG)
@@ -131,16 +134,24 @@ WSGI_APPLICATION = 'realtyos.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME", "real_estate_db"),
-        "USER": os.getenv("DB_USER", "postgres"),
-        "PASSWORD": os.getenv("DB_PASSWORD", "postgres"),
-        "HOST": os.getenv("DB_HOST", "db"),
-        "PORT": os.getenv("DB_PORT", "5432"),
+if env_bool("USE_SQLITE", False):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("DB_NAME", "real_estate_db"),
+            "USER": os.getenv("DB_USER", "postgres"),
+            "PASSWORD": os.getenv("DB_PASSWORD", "postgres"),
+            "HOST": os.getenv("DB_HOST", "db"),
+            "PORT": os.getenv("DB_PORT", "5432"),
+        }
+    }
 
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",
@@ -154,6 +165,14 @@ EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
 DEFAULT_FROM_EMAIL = os.getenv(
     "DEFAULT_FROM_EMAIL",
     "Nexora RealtyOS <noreply@nexora.com>",
+)
+FRONTEND_PASSWORD_RESET_URL = os.getenv(
+    "FRONTEND_PASSWORD_RESET_URL",
+    "http://localhost:5173/reset-password",
+)
+FRONTEND_INVITE_URL = os.getenv(
+    "FRONTEND_INVITE_URL",
+    "http://localhost:5173/accept-invitation",
 )
 # docker compose logs -f api
 
@@ -192,6 +211,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -222,6 +242,7 @@ INSTAGRAM_CONTAINER_POLL_ATTEMPTS = int(
 INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS = float(
     os.getenv("INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS", "2")
 )
+PUBLIC_FRONTEND_URL = os.getenv("PUBLIC_FRONTEND_URL", "http://localhost:5173")
 INSTAGRAM_PUBLISH_DEADLINE_SECONDS = float(
     os.getenv("INSTAGRAM_PUBLISH_DEADLINE_SECONDS", "75")
 )
@@ -234,6 +255,22 @@ META_HTTP_READ_TIMEOUT_SECONDS = float(
 META_INSTAGRAM_READ_TIMEOUT_SECONDS = float(
     os.getenv("META_INSTAGRAM_READ_TIMEOUT_SECONDS", "20")
 )
+
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_SUCCESS_URL = os.getenv(
+    "STRIPE_SUCCESS_URL",
+    "http://localhost:5173/settings?checkout=success",
+)
+STRIPE_CANCEL_URL = os.getenv(
+    "STRIPE_CANCEL_URL",
+    "http://localhost:5173/settings?checkout=cancelled",
+)
+STRIPE_PRICE_IDS = {
+    key.removeprefix("STRIPE_PRICE_").lower(): value
+    for key, value in os.environ.items()
+    if key.startswith("STRIPE_PRICE_") and key not in {"STRIPE_PRICE_IDS"}
+}
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -249,6 +286,11 @@ REST_FRAMEWORK = {
         "token_refresh": os.getenv("THROTTLE_TOKEN_REFRESH", "30/minute"),
         "otp_verify": os.getenv("THROTTLE_OTP_VERIFY", "10/minute"),
         "otp_resend": os.getenv("THROTTLE_OTP_RESEND", "3/hour"),
+        "password_reset": os.getenv("THROTTLE_PASSWORD_RESET", "5/hour"),
+        "password_reset_confirm": os.getenv(
+            "THROTTLE_PASSWORD_RESET_CONFIRM",
+            "10/hour",
+        ),
         "public_submission": os.getenv("THROTTLE_PUBLIC_SUBMISSION", "10/hour"),
         "public_event": os.getenv("THROTTLE_PUBLIC_EVENT", "120/hour"),
         "oauth": os.getenv("THROTTLE_OAUTH", "20/hour"),
@@ -265,7 +307,10 @@ SIMPLE_JWT = {
         days=int(os.getenv("JWT_REFRESH_DAYS", "7"))
     ),
     "ROTATE_REFRESH_TOKENS": env_bool("JWT_ROTATE_REFRESH_TOKENS", True),
-    "BLACKLIST_AFTER_ROTATION": False,
+    "BLACKLIST_AFTER_ROTATION": env_bool(
+        "JWT_BLACKLIST_AFTER_ROTATION",
+        True,
+    ),
 }
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -290,5 +335,7 @@ SPECTACULAR_SETTINGS = {
         "SocialPublishPlatformEnum": "social_media.models.SOCIAL_PUBLISH_PLATFORM_CHOICES",
         "ConversationStatusEnum": "crm_inbox.models.Conversation.STATUS_CHOICES",
         "MessageDeliveryStatusEnum": "crm_inbox.models.SocialMessage.STATUS_CHOICES",
+        "AgencyUserRoleEnum": "users.models.AgencyUser.ROLE_CHOICES",
+        "InvitationRoleEnum": "operations.models.INVITATION_ROLE_CHOICES",
     },
 }

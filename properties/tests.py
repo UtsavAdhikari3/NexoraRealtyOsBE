@@ -477,6 +477,26 @@ class PropertyFilterAPITestCase(APITestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], self.house.id)
 
+    def test_search_by_title_location_and_id(self):
+        url = reverse("property-list")
+
+        title_results = self.get_results(
+            self.client.get(url, {"search": "Modern House"})
+        )
+        location_results = self.get_results(
+            self.client.get(url, {"search": "Jawalakhel"})
+        )
+        id_results = self.get_results(
+            self.client.get(url, {"search": str(self.land.id)})
+        )
+
+        self.assertEqual([item["id"] for item in title_results], [self.house.id])
+        self.assertEqual(
+            [item["id"] for item in location_results],
+            [self.apartment.id],
+        )
+        self.assertEqual([item["id"] for item in id_results], [self.land.id])
+
     def test_filter_by_assigned_agent(self):
         url = reverse("property-list")
 

@@ -104,6 +104,7 @@ class PropertySerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = (
             "agency",
+            "share_slug",
         )
 
     def get_assigned_agent_name(self, obj) -> str | None:
@@ -197,6 +198,15 @@ class PropertySerializer(serializers.ModelSerializer):
                         "Set status to 'available' in the same request."
                     )
                 }
+            )
+
+        request = self.context.get("request")
+        if request and request.user.agency_id:
+            from operations.validators import validate_custom_data
+            validate_custom_data(
+                request.user.agency,
+                "property",
+                attrs.get("custom_data", getattr(self.instance, "custom_data", {})),
             )
 
         return attrs

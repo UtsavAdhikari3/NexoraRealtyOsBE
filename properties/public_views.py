@@ -161,6 +161,10 @@ class PublicPropertyListView(generics.ListAPIView):
         land_area_max = self.request.query_params.get("land_area_max")
         road_access_min = self.request.query_params.get("road_access_min")
         ordering = self.request.query_params.get("ordering")
+        min_lat = self.request.query_params.get("min_lat")
+        max_lat = self.request.query_params.get("max_lat")
+        min_lng = self.request.query_params.get("min_lng")
+        max_lng = self.request.query_params.get("max_lng")
 
         if property_type and property_type != "all":
             queryset = queryset.filter(property_type=property_type)
@@ -182,6 +186,10 @@ class PublicPropertyListView(generics.ListAPIView):
         land_area_min = parse_decimal_filter(land_area_min, "land_area_min")
         land_area_max = parse_decimal_filter(land_area_max, "land_area_max")
         road_access_min = parse_decimal_filter(road_access_min, "road_access_min")
+        min_lat = parse_decimal_filter(min_lat, "min_lat")
+        max_lat = parse_decimal_filter(max_lat, "max_lat")
+        min_lng = parse_decimal_filter(min_lng, "min_lng")
+        max_lng = parse_decimal_filter(max_lng, "max_lng")
 
         if price_min is not None:
             queryset = queryset.filter(price__gte=price_min)
@@ -214,6 +222,10 @@ class PublicPropertyListView(generics.ListAPIView):
             queryset = queryset.filter(land_area_value__lte=land_area_max)
         if road_access_min is not None:
             queryset = queryset.filter(road_access_value__gte=road_access_min)
+        if min_lat is not None: queryset = queryset.filter(latitude__gte=min_lat)
+        if max_lat is not None: queryset = queryset.filter(latitude__lte=max_lat)
+        if min_lng is not None: queryset = queryset.filter(longitude__gte=min_lng)
+        if max_lng is not None: queryset = queryset.filter(longitude__lte=max_lng)
 
         if search:
             queryset = queryset.filter(
@@ -248,6 +260,23 @@ class PublicPropertyDetailView(generics.RetrieveAPIView):
         return get_public_properties_queryset(
             self.kwargs["license_number"]
         )
+
+
+class PublicPropertyShareDetailView(generics.RetrieveAPIView):
+    serializer_class = PublicPropertySerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    lookup_field = "share_slug"
+    lookup_url_kwarg = "share_slug"
+
+    def get_queryset(self):
+        return Property.objects.filter(
+            agency__slug=self.kwargs["slug"],
+            agency__payment_status="paid",
+            agency__is_active=True,
+            is_published=True,
+            status="available",
+        ).select_related("agency", "assigned_agent").prefetch_related("media")
 
 
 class PublicPropertyFilterOptionsView(APIView):

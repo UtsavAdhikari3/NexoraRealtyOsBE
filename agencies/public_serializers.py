@@ -26,6 +26,9 @@ class PublicAgencySerializer(serializers.ModelSerializer):
             "city",
             "business_hours",
             "primary_color",
+            "seo_title",
+            "seo_description",
+            "custom_domain",
 
             "facebook_url",
             "instagram_url",

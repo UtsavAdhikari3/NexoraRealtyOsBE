@@ -18,6 +18,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x entrypoint.sh
+RUN addgroup --system nexora \
+    && adduser --system --ingroup nexora nexora \
+    && mkdir -p /app/media /app/staticfiles \
+    && chmod +x entrypoint.sh \
+    && chown -R nexora:nexora /app
+
+USER nexora
 
 CMD ["./entrypoint.sh"]

@@ -1,4 +1,13 @@
+import logging
+from urllib.parse import urlencode
+
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.utils import timezone
 
 from rest_framework import generics, status
 from rest_framework.views import APIView
@@ -17,11 +26,13 @@ from .serializers import (
     AgentSelfProfileSerializer,
     VerifyLoginOTPSerializer,
     ResendLoginOTPSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetConfirmSerializer,
 )
-
 from .models import EmailOTP
 from .emails import send_login_verification_otp
-from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -440,3 +451,81 @@ class ThrottledTokenRefreshView(TokenRefreshView):
     throttle_scope = "token_refresh"
     permission_classes = [AllowAny]
     authentication_classes = []
+
+
+class PasswordResetRequestView(APIView):
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "password_reset"
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = User.objects.filter(
+            email=serializer.validated_data["email"],
+            is_active=True,
+        ).first()
+
+        if user:
+            query = urlencode(
+                {
+                    "uid": urlsafe_base64_encode(force_bytes(user.pk)),
+                    "token": default_token_generator.make_token(user),
+                }
+            )
+            reset_url = f"{settings.FRONTEND_PASSWORD_RESET_URL}?{query}"
+            try:
+                send_mail(
+                    subject="Reset your Nexora RealtyOS password",
+                    message=(
+                        f"Hi {user.full_name},\n\n"
+                        f"Use this link to reset your password:\n{reset_url}\n\n"
+                        "If you did not request this, you can ignore this email."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+            except Exception:
+                logger.exception("Unable to send a password reset email")
+
+        return Response(
+            {
+                "message": (
+                    "If an active account exists for that email, a password reset link has been sent."
+                )
+            }
+        )
+
+
+class PasswordResetConfirmView(APIView):
+    serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "password_reset_confirm"
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            user_id = force_str(
+                urlsafe_base64_decode(serializer.validated_data["uid"])
+            )
+            user = User.objects.get(pk=user_id, is_active=True)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            user = None
+
+        if not user or not default_token_generator.check_token(
+            user,
+            serializer.validated_data["token"],
+        ):
+            return Response(
+                {"detail": "This password reset link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return Response({"message": "Password reset successfully."})

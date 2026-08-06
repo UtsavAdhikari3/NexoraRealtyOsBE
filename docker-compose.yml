@@ -3,13 +3,16 @@ services:
     image: postgres:16
     container_name: real_estate_db
     environment:
-      POSTGRES_DB: real_estate_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${DB_NAME:-real_estate_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   api:
     build: .
@@ -17,23 +20,61 @@ services:
     command: ./entrypoint.sh
     volumes:
       - .:/app
+      - media_data:/app/media
+      - static_data:/app/staticfiles
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: realtyos.settings
-      DB_NAME: real_estate_db
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      DB_NAME: ${DB_NAME:-real_estate_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
       DB_HOST: db
       DB_PORT: 5432
-      DEBUG: "True"
+      DEBUG: ${DEBUG:-True}
       GUNICORN_TIMEOUT: "180"
       GUNICORN_WORKERS: "2"
       GUNICORN_THREADS: "4"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  scheduler:
+    build: .
+    container_name: real_estate_scheduler
+    command: >
+      sh -c "while true; do
+      python manage.py send_due_reminders --hours 24;
+      python manage.py send_task_reminders;
+      python manage.py send_saved_search_alerts;
+      python manage.py publish_scheduled_posts;
+      sleep 300;
+      done"
+    volumes:
+      - .:/app
+      - media_data:/app/media
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: realtyos.settings
+      DB_NAME: ${DB_NAME:-real_estate_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_HOST: db
+      DB_PORT: 5432
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  media_data:
+  static_data:

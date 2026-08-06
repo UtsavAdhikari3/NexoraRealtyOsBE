@@ -144,6 +144,26 @@ Conversation list filters include `platform`, `status`, `assigned_agent`, `unrea
 
 Set `META_WEBHOOK_VERIFY_TOKEN` to a long random value and use that same value in the Meta dashboard. Configure the callback URL as `https://<public-backend-host>/api/webhooks/meta/`. Reconnect existing Meta accounts after deploying this feature so Nexora can request messaging permissions and subscribe the Page to webhook fields.
 
+## Operations, transactions, and customer portal
+
+Agency-authenticated resources use standard list/create and `{id}` retrieve/patch/delete routes below `/api/operations/`: `contacts`, `owners`, `deals`, `offers`, `documents`, `leases`, `tasks`, `appointments`, `availability`, `invitations`, `team-members`, `notifications`, `custom-fields`, `pipeline-stages`, and `audit-logs`.
+
+Additional endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/operations/reports/summary/` | Pipeline, lead source, and agent performance report |
+| GET | `/api/operations/matching/leads/{id}/` | Ranked property matches for a lead |
+| GET | `/api/operations/properties/compare/?ids=1,2` | Compare up to four agency properties |
+| POST | `/api/operations/invitation/accept/` | Accept a one-time team invitation |
+| POST | `/api/operations/subscriptions/checkout/` | Create Stripe Checkout session |
+| POST | `/api/operations/subscriptions/billing-portal/` | Open Stripe billing portal |
+| POST | `/api/webhooks/stripe/` | Receive signature-verified Stripe events |
+| GET | `/api/operations/admin/summary/` | Super-admin platform metrics |
+| GET/PATCH | `/api/operations/platform-agencies/{id}/` | Super-admin agency controls |
+
+Customer endpoints live under `/api/public/agencies/{slug}/`. Register or log in under `customers/`, then send the returned token in `X-Customer-Token` for saved properties and saved searches. Public appointment availability and booking use `appointments/`. Canonical public listing lookup uses `/api/public/agencies/by-slug/{slug}/listings/{share_slug}/`.
+
 ## Error behavior
 
 - `400`: validation failure

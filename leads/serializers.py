@@ -23,6 +23,7 @@ class LeadStatusHistorySerializer(serializers.ModelSerializer):
 
 
 class LeadSerializer(serializers.ModelSerializer):
+    status = serializers.CharField(max_length=40, required=False)
     assigned_agent_name = serializers.SerializerMethodField()
     property_interests_count = serializers.SerializerMethodField()
     interactions_count = serializers.SerializerMethodField()
@@ -46,6 +47,7 @@ class LeadSerializer(serializers.ModelSerializer):
             "purpose",
             "property_type",
             "notes",
+            "custom_data",
             "last_contacted_at",
             "next_follow_up_at",
             "follow_up_status",
@@ -123,6 +125,25 @@ class LeadSerializer(serializers.ModelSerializer):
             "status",
             self.instance.status if self.instance else Lead._meta.get_field("status").default,
         )
+        request = self.context.get("request")
+        allowed_statuses = {choice[0] for choice in Lead.STATUS_CHOICES}
+        if request and request.user.agency_id:
+            from operations.models import PipelineStage
+            allowed_statuses.update(
+                PipelineStage.objects.filter(
+                    agency=request.user.agency,
+                    module="lead",
+                ).values_list("key", flat=True)
+            )
+        if status_value not in allowed_statuses:
+            raise serializers.ValidationError({"status": "Unknown pipeline stage."})
+        if request and request.user.agency_id:
+            from operations.validators import validate_custom_data
+            validate_custom_data(
+                request.user.agency,
+                "lead",
+                attrs.get("custom_data", getattr(self.instance, "custom_data", {})),
+            )
         lost_reason = attrs.get(
             "lost_reason",
             self.instance.lost_reason if self.instance else "",

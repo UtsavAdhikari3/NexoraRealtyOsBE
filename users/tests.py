@@ -1,3 +1,7 @@
+import re
+from unittest.mock import patch
+
+from django.core import mail
 from django.core.cache import cache
 from django.urls import reverse
 from django.contrib.auth import get_user_model
@@ -82,7 +86,7 @@ class AgentRolePermissionAPITestCase(APITestCase):
         payload = {
             "full_name": "New Agent",
             "email": "new.agent@nexora.com",
-            "password": "Password123",
+            "password": "Owner-Created-Agent-2026",
         }
 
         response = self.client.post(url, payload, format="json")
@@ -105,7 +109,7 @@ class AgentRolePermissionAPITestCase(APITestCase):
         payload = {
             "full_name": "Manager Created Agent",
             "email": "manager.created.agent@nexora.com",
-            "password": "Password123",
+            "password": "Manager-Created-Agent-2026",
         }
 
         response = self.client.post(url, payload, format="json")
@@ -164,6 +168,114 @@ class AgentRolePermissionAPITestCase(APITestCase):
         self.agent.refresh_from_db()
 
         self.assertFalse(self.agent.is_active)
+
+    def test_owner_can_change_agent_password_using_patch(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            reverse("agent-detail", kwargs={"pk": self.agent.id}),
+            {"password": "A-Much-Better-Password-2026"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.agent.refresh_from_db()
+        self.assertTrue(self.agent.check_password("A-Much-Better-Password-2026"))
+
+
+class PasswordPolicyAndResetAPITestCase(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.agency = Agency.objects.create(
+            name="Password Reset Realty",
+            license_number="PASSWORD-RESET-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.user = User.objects.create_user(
+            email="reset@example.com",
+            password="Original-Password-2026",
+            full_name="Reset User",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+            is_email_verified=True,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_registration_rejects_password_disallowed_by_django_policy(self):
+        response = self.client.post(
+            reverse("register"),
+            {
+                "full_name": "Weak Password User",
+                "email": "weak@example.com",
+                "password": "12345678",
+                "agency_name": "Weak Password Realty",
+                "license_number": "WEAK-PASSWORD-001",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+
+    def test_password_reset_request_does_not_reveal_account_existence(self):
+        existing = self.client.post(
+            reverse("password-reset"),
+            {"email": self.user.email},
+            format="json",
+        )
+        missing = self.client.post(
+            reverse("password-reset"),
+            {"email": "missing@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(existing.status_code, status.HTTP_200_OK)
+        self.assertEqual(missing.status_code, status.HTTP_200_OK)
+        self.assertEqual(existing.data, missing.data)
+        self.assertEqual(len(mail.outbox), 1)
+
+    @patch("users.views.send_mail", side_effect=RuntimeError("SMTP unavailable"))
+    def test_password_reset_request_does_not_reveal_mail_failure(self, _send_mail):
+        response = self.client.post(
+            reverse("password-reset"),
+            {"email": self.user.email},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("message", response.data)
+
+    def test_password_reset_link_changes_password_and_is_single_use(self):
+        request_response = self.client.post(
+            reverse("password-reset"),
+            {"email": self.user.email},
+            format="json",
+        )
+        self.assertEqual(request_response.status_code, status.HTTP_200_OK)
+        match = re.search(r"[?&]uid=([^&\s]+)&token=([^\s]+)", mail.outbox[0].body)
+        self.assertIsNotNone(match)
+        payload = {
+            "uid": match.group(1),
+            "token": match.group(2),
+            "new_password": "Replacement-Password-2026",
+        }
+
+        response = self.client.post(
+            reverse("password-reset-confirm"),
+            payload,
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("Replacement-Password-2026"))
+
+        reused = self.client.post(
+            reverse("password-reset-confirm"),
+            payload,
+            format="json",
+        )
+        self.assertEqual(reused.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class AgentProfileAPITestCase(APITestCase):

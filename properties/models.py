@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 from django.utils import timezone
 
 from agencies.models import Agency
@@ -164,6 +165,7 @@ class Property(models.Model):
     virtual_tour_url = models.URLField(
         blank=True
     )
+    video_tour_url = models.URLField(blank=True)
 
     # Step 5: Description
     short_description = models.CharField(
@@ -172,6 +174,10 @@ class Property(models.Model):
     )
 
     description = models.TextField(blank=True)
+    custom_data = models.JSONField(default=dict, blank=True)
+    seo_title = models.CharField(max_length=70, blank=True)
+    seo_description = models.CharField(max_length=180, blank=True)
+    share_slug = models.SlugField(max_length=180, blank=True)
 
     # Step 6: Publish
     status = models.CharField(
@@ -258,8 +264,15 @@ class Property(models.Model):
             models.Index(fields=["agency", "assigned_agent", "status"]),
             models.Index(fields=["city", "district"]),
         ]
+        constraints = [
+            models.UniqueConstraint(fields=["agency", "share_slug"], name="unique_agency_property_share_slug"),
+        ]
 
     def save(self, *args, **kwargs):
+        if not self.share_slug:
+            from django.utils.text import slugify
+            stem = slugify(self.title)[:140] or "listing"
+            self.share_slug = f"{stem}-{uuid.uuid4().hex[:8]}"
         changed_fields = set(kwargs.get("update_fields") or [])
 
         if self.status != "available":

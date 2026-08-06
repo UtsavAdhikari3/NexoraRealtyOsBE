@@ -23,6 +23,13 @@ from .serializers import PropertySerializer, PropertyMediaSerializer
 
 PROPERTY_FILTER_PARAMETERS = [
     OpenApiParameter(
+        name="search",
+        type=OpenApiTypes.STR,
+        location=OpenApiParameter.QUERY,
+        required=False,
+        description="Search by property ID, title, or location",
+    ),
+    OpenApiParameter(
         name="property_type",
         type=OpenApiTypes.STR,
         location=OpenApiParameter.QUERY,
@@ -112,6 +119,7 @@ class PropertyListCreateView(generics.ListCreateAPIView):
         status_value = self.request.query_params.get("status")
         location = self.request.query_params.get("location")
         assigned_agent = self.request.query_params.get("assigned_agent")
+        search = self.request.query_params.get("search", "").strip()
 
         if property_type and property_type != "all":
             queryset = queryset.filter(property_type=property_type)
@@ -135,6 +143,20 @@ class PropertyListCreateView(generics.ListCreateAPIView):
                 queryset = queryset.filter(assigned_agent_id=int(assigned_agent))
             else:
                 queryset = queryset.none()
+
+        if search:
+            if search.isdigit():
+                search_query = Q(pk=int(search))
+            else:
+                search_query = (
+                    Q(title__icontains=search)
+                    | Q(province__icontains=search)
+                    | Q(district__icontains=search)
+                    | Q(city__icontains=search)
+                    | Q(neighbourhood__icontains=search)
+                    | Q(address__icontains=search)
+                )
+            queryset = queryset.filter(search_query)
 
         return queryset
 

@@ -24,7 +24,12 @@ class CurrentAgencyView(APIView):
                 {"detail": "An agency account is required."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        return Response(self.serializer_class(request.user.agency).data)
+        return Response(
+            self.serializer_class(
+                request.user.agency,
+                context={"request": request},
+            ).data
+        )
 
     def patch(self, request):
         if not request.user.is_authenticated or not request.user.agency_id:
@@ -41,6 +46,7 @@ class CurrentAgencyView(APIView):
             request.user.agency,
             data=request.data,
             partial=True,
+            context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()

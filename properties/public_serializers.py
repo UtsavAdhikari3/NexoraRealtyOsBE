@@ -83,8 +83,12 @@ class PublicPropertySerializer(serializers.ModelSerializer):
 
             "amenities",
             "virtual_tour_url",
+            "video_tour_url",
             "short_description",
             "description",
+            "seo_title",
+            "seo_description",
+            "share_slug",
 
             "is_featured",
             "published_at",

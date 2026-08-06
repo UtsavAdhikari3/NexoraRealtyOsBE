@@ -8,8 +8,8 @@ python-dotenv==1.2.2
 sqlparse==0.5.5
 typing_extensions==4.15.0
 tzdata==2026.2
-djangorestframework-simplejwt
-drf_spectacular
-Pillow
-django-cors-headers
-requests
+djangorestframework-simplejwt==5.5.1
+drf-spectacular==0.30.0
+Pillow==12.3.0
+django-cors-headers==4.9.0
+requests==2.34.2

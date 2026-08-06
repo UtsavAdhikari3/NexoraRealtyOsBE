@@ -35,6 +35,9 @@ class Agency(models.Model):
     city = models.CharField(max_length=100, blank=True)
     business_hours = models.CharField(max_length=255, blank=True)
     primary_color = models.CharField(max_length=20, blank=True)
+    seo_title = models.CharField(max_length=70, blank=True)
+    seo_description = models.CharField(max_length=180, blank=True)
+    custom_domain = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
     subscription_expires_at = models.DateTimeField(null=True, blank=True)
 

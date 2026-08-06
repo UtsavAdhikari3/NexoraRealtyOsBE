@@ -1,8 +1,10 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from rest_framework import serializers
 
 from agencies.models import Agency
+from .models import AgencyUser
 
 User = get_user_model()
 
@@ -78,6 +80,10 @@ class RegisterSerializer(serializers.Serializer):
 
         return value
 
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
     @transaction.atomic
     def create(self, validated_data):
         agency = Agency.objects.create(
@@ -107,8 +113,13 @@ class LoginResponseSerializer(serializers.Serializer):
     user = serializers.DictField()
     agency = serializers.DictField()
 
-from .models import AgencyUser
 class AgentSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(
+        write_only=True,
+        required=False,
+        min_length=8,
+    )
+
     class Meta:
         model = AgencyUser
         fields = [
@@ -120,6 +131,7 @@ class AgentSerializer(serializers.ModelSerializer):
             "profile_image",
             "designation",
             "bio",
+            "password",
             "is_active",
             "created_at",
         ]
@@ -129,6 +141,18 @@ class AgentSerializer(serializers.ModelSerializer):
             "role",
             "created_at",
         ]
+
+    def validate_password(self, value):
+        validate_password(value, user=self.instance)
+        return value
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        instance = super().update(instance, validated_data)
+        if password:
+            instance.set_password(password)
+            instance.save(update_fields=["password"])
+        return instance
 
 
 class AgentSelfProfileSerializer(AgentProfileMetricsMixin, serializers.ModelSerializer):
@@ -219,6 +243,10 @@ class AgentCreateSerializer(serializers.Serializer):
 
         return value
 
+    def validate_password(self, value):
+        validate_password(value)
+        return value
+
     def create(self, validated_data):
         request = self.context["request"]
 
@@ -255,3 +283,20 @@ class ResendLoginOTPSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         return value.lower().strip()
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return value.lower().strip()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_new_password(self, value):
+        validate_password(value)
+        return value

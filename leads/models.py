@@ -111,6 +111,7 @@ class Lead(models.Model):
     )
 
     notes = models.TextField(blank=True)
+    custom_data = models.JSONField(default=dict, blank=True)
     last_contacted_at = models.DateTimeField(null=True, blank=True)
     next_follow_up_at = models.DateTimeField(null=True, blank=True)
     follow_up_status = models.CharField(
