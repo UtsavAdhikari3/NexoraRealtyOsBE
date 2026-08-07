@@ -236,6 +236,10 @@ class PublicPropertyInquirySerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=30)
     email = serializers.EmailField(required=False, allow_blank=True)
     message = serializers.CharField(required=False, allow_blank=True)
+    utm_source = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    utm_medium = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    utm_campaign = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    distribution_code = serializers.CharField(max_length=16, required=False, allow_blank=True)
 
     def validate_full_name(self, value):
         return value.strip()

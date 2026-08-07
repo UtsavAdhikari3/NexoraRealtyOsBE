@@ -7,6 +7,10 @@ from agencies.models import Agency
 from users.models import AgencyUser
 
 
+def generate_distribution_code():
+    return uuid.uuid4().hex[:10]
+
+
 class Property(models.Model):
     PROPERTY_TYPES = [
         ("house", "House"),
@@ -637,6 +641,7 @@ class PropertyEvent(models.Model):
     EVENT_CALL_CLICK = "call_click"
     EVENT_INQUIRY = "inquiry"
     EVENT_SITE_VISIT_REQUEST = "site_visit_request"
+    EVENT_DISTRIBUTION_CLICK = "distribution_click"
 
     EVENT_TYPE_CHOICES = [
         (EVENT_VIEW, "Property View"),
@@ -645,6 +650,7 @@ class PropertyEvent(models.Model):
         (EVENT_CALL_CLICK, "Call Click"),
         (EVENT_INQUIRY, "Inquiry"),
         (EVENT_SITE_VISIT_REQUEST, "Site Visit Request"),
+        (EVENT_DISTRIBUTION_CLICK, "Distribution Link Click"),
     ]
 
     agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_events")
@@ -671,6 +677,41 @@ class PropertyEvent(models.Model):
             models.Index(fields=["agency", "event_type", "created_at"]),
             models.Index(fields=["property", "event_type", "created_at"]),
         ]
+
+
+class PropertyDistributionLink(models.Model):
+    agency = models.ForeignKey(
+        Agency, on_delete=models.CASCADE, related_name="property_distribution_links"
+    )
+    property = models.ForeignKey(
+        Property, on_delete=models.CASCADE, related_name="distribution_links"
+    )
+    code = models.CharField(
+        max_length=16, unique=True, default=generate_distribution_code, editable=False
+    )
+    label = models.CharField(max_length=120, blank=True)
+    source = models.CharField(max_length=100)
+    medium = models.CharField(max_length=100, default="social")
+    campaign = models.CharField(max_length=150, blank=True)
+    is_active = models.BooleanField(default=True)
+    click_count = models.PositiveIntegerField(default=0)
+    last_clicked_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_property_distribution_links",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["agency", "property", "source"]),
+            models.Index(fields=["code", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.property.title} - {self.source}"
 
 
 AREA_UNIT_CHOICES = Property.AREA_UNITS

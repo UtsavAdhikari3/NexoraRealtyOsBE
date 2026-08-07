@@ -8,10 +8,12 @@ from .public_views import (
     PublicSimilarPropertiesView,
     PublicPropertyEventView,
     PublicPropertyShareDetailView,
+    PublicDistributionLinkRedirectView,
 )
 
 
 urlpatterns = [
+    path("s/<str:code>/", PublicDistributionLinkRedirectView.as_view(), name="public-distribution-link"),
     path(
         "agencies/by-slug/<slug:slug>/listings/<slug:share_slug>/",
         PublicPropertyShareDetailView.as_view(),

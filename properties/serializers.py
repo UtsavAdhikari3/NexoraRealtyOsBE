@@ -7,6 +7,7 @@ from rest_framework import serializers
 from .models import (
     Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument,
     PropertyHistory, PropertyDuplicateFlag,
+    PropertyDistributionLink,
 )
 from .area import conversion_payload, price_per_area
 
@@ -247,6 +248,32 @@ class PropertyDuplicateFlagSerializer(serializers.ModelSerializer):
 
     def get_candidate_display_id(self, obj):
         return f"LP-{obj.candidate_id:03d}"
+
+
+class PropertyDistributionLinkSerializer(serializers.ModelSerializer):
+    short_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PropertyDistributionLink
+        fields = [
+            "id", "code", "label", "source", "medium", "campaign",
+            "short_url", "is_active", "click_count", "last_clicked_at",
+            "created_by", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "code", "short_url", "click_count", "last_clicked_at",
+            "created_by", "created_at", "updated_at",
+        ]
+
+    def get_short_url(self, obj):
+        from .distribution import tracked_url
+        return tracked_url(obj, self.context.get("request"))
+
+    def validate_source(self, value):
+        cleaned = value.strip().lower().replace(" ", "_")
+        if not cleaned:
+            raise serializers.ValidationError("Source is required.")
+        return cleaned
 
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)

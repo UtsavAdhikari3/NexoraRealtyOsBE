@@ -1,4 +1,5 @@
-from django.db.models import Q
+from django.db.models import F, Q
+from django.shortcuts import redirect
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 
@@ -15,7 +16,7 @@ from drf_spectacular.utils import (
 )
 from drf_spectacular.types import OpenApiTypes
 
-from .models import Property, PropertyEvent
+from .models import Property, PropertyDistributionLink, PropertyEvent
 from .area import convert_area
 from .public_serializers import (
     PublicPropertyEventSerializer,
@@ -31,6 +32,7 @@ from rest_framework.response import Response
 
 from leads.models import LeadPropertyInterest, LeadInteraction
 from leads.services import get_or_create_public_lead
+from urllib.parse import urlencode
 
 
 PUBLIC_PROPERTY_FILTER_PARAMETERS = [
@@ -98,6 +100,44 @@ PUBLIC_PROPERTY_FILTER_PARAMETERS = [
         description="Search title, description, and location"
     ),
 ]
+
+
+class PublicDistributionLinkRedirectView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, code):
+        from .distribution import canonical_property_url
+
+        link = get_object_or_404(
+            PropertyDistributionLink.objects.select_related("property__agency"),
+            code=code,
+            is_active=True,
+            agency__is_active=True,
+        )
+        now = timezone.now()
+        PropertyDistributionLink.objects.filter(pk=link.pk).update(
+            click_count=F("click_count") + 1,
+            last_clicked_at=now,
+        )
+        PropertyEvent.objects.create(
+            agency=link.agency,
+            property=link.property,
+            event_type=PropertyEvent.EVENT_DISTRIBUTION_CLICK,
+            visitor_id=request.headers.get("X-Visitor-ID", "")[:100],
+            referrer=request.headers.get("Referer", "")[:1000],
+            utm_source=link.source,
+            utm_medium=link.medium,
+            utm_campaign=link.campaign,
+            metadata={"distribution_code": link.code, "label": link.label},
+        )
+        query = urlencode({
+            "utm_source": link.source,
+            "utm_medium": link.medium,
+            "utm_campaign": link.campaign,
+            "nexora_link": link.code,
+        })
+        return redirect(f"{canonical_property_url(link.property)}?{query}")
 
 
 def get_public_properties_queryset(license_number):
@@ -429,6 +469,14 @@ class PublicPropertyInquiryView(APIView):
             notes=data.get("message", ""),
             property_obj=property_obj,
         )
+        attribution = {
+            key: data.get(key, "")
+            for key in ("utm_source", "utm_medium", "utm_campaign", "distribution_code")
+            if data.get(key)
+        }
+        if attribution:
+            lead.custom_data = {**(lead.custom_data or {}), "distribution_attribution": attribution}
+            lead.save(update_fields=["custom_data", "updated_at"])
 
         lead_interest, _ = LeadPropertyInterest.objects.get_or_create(
             agency=property_obj.agency,
@@ -454,6 +502,10 @@ class PublicPropertyInquiryView(APIView):
             lead=lead,
             event_type=PropertyEvent.EVENT_INQUIRY,
             visitor_id=request.headers.get("X-Visitor-ID", "")[:100],
+            utm_source=data.get("utm_source", ""),
+            utm_medium=data.get("utm_medium", ""),
+            utm_campaign=data.get("utm_campaign", ""),
+            metadata={"distribution_code": data.get("distribution_code", "")},
         )
 
         return Response(

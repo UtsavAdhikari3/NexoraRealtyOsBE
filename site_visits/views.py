@@ -337,6 +337,14 @@ class PublicSiteVisitRequestView(APIView):
             notes=data.get("message", ""),
             property_obj=property_obj,
         )
+        attribution = {
+            key: data.get(key, "")
+            for key in ("utm_source", "utm_medium", "utm_campaign", "distribution_code")
+            if data.get(key)
+        }
+        if attribution:
+            lead.custom_data = {**(lead.custom_data or {}), "distribution_attribution": attribution}
+            lead.save(update_fields=["custom_data", "updated_at"])
         assigned_agent = lead.assigned_agent
 
         lead_interest, _ = LeadPropertyInterest.objects.get_or_create(
@@ -379,6 +387,10 @@ class PublicSiteVisitRequestView(APIView):
             lead=lead,
             event_type=PropertyEvent.EVENT_SITE_VISIT_REQUEST,
             visitor_id=request.headers.get("X-Visitor-ID", "")[:100],
+            utm_source=data.get("utm_source", ""),
+            utm_medium=data.get("utm_medium", ""),
+            utm_campaign=data.get("utm_campaign", ""),
+            metadata={"distribution_code": data.get("distribution_code", "")},
         )
 
         return Response(

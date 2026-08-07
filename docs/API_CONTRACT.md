@@ -135,6 +135,22 @@ Each target is recorded in `publish_results`. Overall statuses are:
 
 A retry skips already published results, preventing duplicate posts on the platform that previously succeeded. Partial responses use HTTP `207`; total upstream failure uses HTTP `502`.
 
+## Listing distribution toolkit
+
+Authenticated agency users can generate and download marketing assets for properties they manage. Owners and managers can also export multiple agency listings; agents are restricted to their assigned listings.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/properties/{id}/distribution/` | Captions, portal copy, asset catalogue, links, and attribution totals |
+| GET/POST | `/api/properties/{id}/distribution/links/` | List or create source-tracked short links |
+| PATCH/DELETE | `/api/properties/distribution/links/{id}/` | Enable, disable, edit, or remove a tracked link |
+| GET | `/api/properties/{id}/distribution/assets/{type}/` | Download a social image, QR, PDF, CSV, watermarked ZIP, or full package |
+| POST | `/api/properties/{id}/distribution/social-draft/` | Create or immediately publish a generated Meta feed post |
+| GET | `/api/properties/distribution/portal-export/?ids=1,2` | Export selected listings in portal-ready CSV format |
+| GET | `/api/public/s/{code}/` | Count a distribution click and redirect to the public listing with attribution |
+
+Asset types are `facebook_post`, `instagram_post`, `instagram_story`, `watermarked_images`, `brochure`, `window_card`, `qr_code`, `portal_csv`, and `media_package`. Pass `?link={distribution_link_id}` when downloading an asset to embed that tracked URL in its QR/copy. Public inquiry and site-visit payloads accept `utm_source`, `utm_medium`, `utm_campaign`, and `distribution_code`.
+
 ## Unified social inbox
 
 Meta sends Facebook Page and Instagram Business messaging events to `GET/POST /api/webhooks/meta/`. The GET request verifies the callback; POST requests require Meta's `X-Hub-Signature-256` signature. Payloads and messages are stored idempotently, so webhook retries do not duplicate conversations or messages.

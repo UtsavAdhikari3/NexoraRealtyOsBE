@@ -14,6 +14,7 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
 - Due/overdue follow-ups and idempotent reminders
 - Site-visit scheduling, outcomes, cancellations, and reminders
 - Property view/contact conversion events and dashboard summaries
+- Listing distribution with branded social assets, watermarked media, print PDFs, QR/short links, bilingual copy, portal CSVs, and source attribution
 - Meta account connection plus Facebook and Instagram image publishing/scheduling
 - OpenAPI, Swagger UI, ReDoc, health checks, and request throttling
 - Contacts and owners; deals, offers, token amounts, commissions, and closing

@@ -1,4 +1,6 @@
-from django.db.models import Q
+from django.db.models import Count, Q
+from django.core.files.base import ContentFile
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework import generics
@@ -21,11 +23,13 @@ from users.models import AgencyUser
 from .models import (
     Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument,
     PropertyHistory, PropertyDuplicateFlag,
+    PropertyDistributionLink, PropertyEvent,
 )
 from .serializers import (
     PropertySerializer, PropertyMediaSerializer,
     PropertyVerificationSerializer, PropertyVerificationDocumentSerializer,
     PropertyHistorySerializer, PropertyDuplicateFlagSerializer,
+    PropertyDistributionLinkSerializer,
 )
 from .verification import get_or_create_verification
 from .freshness import (
@@ -618,3 +622,218 @@ class PropertyDuplicateFlagDetailView(generics.UpdateAPIView):
         if serializer.validated_data.get("status") not in {"confirmed", "dismissed"}:
             raise ValidationError({"status": "Choose confirmed or dismissed."})
         serializer.save(reviewed_by=self.request.user, reviewed_at=timezone.now())
+
+
+def get_distribution_property(request, property_id):
+    property_obj = get_object_or_404(
+        Property.objects.select_related("agency", "assigned_agent").prefetch_related("media"),
+        id=property_id,
+        agency=request.user.agency,
+    )
+    if not can_manage_property(request.user, property_obj):
+        raise PermissionDenied("You do not have permission to distribute this property.")
+    return property_obj
+
+
+class PropertyDistributionToolkitView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, property_id):
+        from .distribution import (
+            ASSET_SPECS, canonical_property_url, captions, portal_ad,
+        )
+
+        property_obj = get_distribution_property(request, property_id)
+        public_url = canonical_property_url(property_obj)
+        links = property_obj.distribution_links.select_related("created_by").all()
+        event_summary = list(
+            property_obj.events.exclude(utm_source="").values("utm_source").annotate(
+                total=Count("id"),
+                inquiries=Count("id", filter=Q(event_type=PropertyEvent.EVENT_INQUIRY)),
+                site_visits=Count("id", filter=Q(event_type=PropertyEvent.EVENT_SITE_VISIT_REQUEST)),
+            ).order_by("-total")
+        )
+        return Response({
+            "property": {
+                "id": property_obj.id,
+                "display_property_id": f"LP-{property_obj.id:03d}",
+                "title": property_obj.title,
+                "status": property_obj.status,
+            },
+            "public_url": public_url,
+            "captions": captions(property_obj, public_url),
+            "portal_ad": {
+                "english": portal_ad(property_obj, public_url),
+                "nepali": portal_ad(property_obj, public_url, "nepali"),
+            },
+            "assets": [
+                {"type": key, "label": spec[2], "extension": spec[3]}
+                for key, spec in ASSET_SPECS.items()
+            ],
+            "links": PropertyDistributionLinkSerializer(
+                links, many=True, context={"request": request}
+            ).data,
+            "attribution": event_summary,
+        })
+
+
+class PropertyDistributionLinkListCreateView(generics.ListCreateAPIView):
+    serializer_class = PropertyDistributionLinkSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_property(self):
+        return get_distribution_property(self.request, self.kwargs["property_id"])
+
+    def get_queryset(self):
+        return PropertyDistributionLink.objects.filter(
+            agency=self.request.user.agency,
+            property=self.get_property(),
+        ).select_related("created_by")
+
+    def perform_create(self, serializer):
+        serializer.save(
+            agency=self.request.user.agency,
+            property=self.get_property(),
+            created_by=self.request.user,
+            is_active=True,
+        )
+
+
+class PropertyDistributionLinkDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = PropertyDistributionLinkSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return PropertyDistributionLink.objects.filter(
+            agency=self.request.user.agency
+        ).select_related("property", "created_by")
+
+    def get_object(self):
+        obj = super().get_object()
+        if not can_manage_property(self.request.user, obj.property):
+            raise PermissionDenied("You do not have permission to manage this link.")
+        return obj
+
+
+class PropertyDistributionAssetView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, property_id, asset_type):
+        from .distribution import (
+            ASSET_SPECS, brochure_pdf, canonical_property_url, media_package,
+            portal_csv, qr_png, social_image, tracked_url, watermarked_zip,
+            window_card_pdf,
+        )
+
+        if asset_type not in ASSET_SPECS:
+            raise ValidationError({"asset_type": "Unknown distribution asset."})
+        property_obj = get_distribution_property(request, property_id)
+        link = None
+        if request.query_params.get("link"):
+            link = get_object_or_404(
+                PropertyDistributionLink,
+                id=request.query_params["link"],
+                property=property_obj,
+                agency=request.user.agency,
+                is_active=True,
+            )
+        url = tracked_url(link, request) if link else canonical_property_url(property_obj)
+        stem = f"LP-{property_obj.id:03d}-{asset_type}"
+        if asset_type in {"facebook_post", "instagram_post", "instagram_story"}:
+            response = HttpResponse(social_image(property_obj, asset_type, url), content_type="image/jpeg")
+            filename = f"{stem}.jpg"
+        elif asset_type == "qr_code":
+            response = HttpResponse(qr_png(url), content_type="image/png")
+            filename = f"{stem}.png"
+        elif asset_type == "brochure":
+            response = HttpResponse(brochure_pdf(property_obj, url), content_type="application/pdf")
+            filename = f"{stem}.pdf"
+        elif asset_type == "window_card":
+            response = HttpResponse(window_card_pdf(property_obj, url), content_type="application/pdf")
+            filename = f"{stem}.pdf"
+        elif asset_type == "portal_csv":
+            response = HttpResponse(portal_csv([property_obj], request), content_type="text/csv; charset=utf-8")
+            filename = f"{stem}.csv"
+        elif asset_type == "watermarked_images":
+            response = FileResponse(watermarked_zip(property_obj), content_type="application/zip")
+            filename = f"{stem}.zip"
+        else:
+            response = FileResponse(media_package(property_obj, url), content_type="application/zip")
+            filename = f"{stem}.zip"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class PropertyPortalExportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .distribution import portal_csv
+
+        queryset = Property.objects.filter(agency=request.user.agency).select_related(
+            "agency", "assigned_agent"
+        ).order_by("id")
+        if not can_manage_any_property(request.user):
+            queryset = queryset.filter(assigned_agent=request.user)
+        ids = [value for value in request.query_params.get("ids", "").split(",") if value.isdigit()]
+        if ids:
+            queryset = queryset.filter(id__in=ids)
+        response = HttpResponse(portal_csv(queryset, request), content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = 'attachment; filename="nexora-property-portal-export.csv"'
+        return response
+
+
+class PropertyDistributionSocialDraftView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, property_id):
+        from social_media.models import SocialAccount, SocialPost
+        from social_media.serializers import SocialPostSerializer
+        from social_media.services.publishing import publish_social_post
+        from .distribution import captions, canonical_property_url, social_image, tracked_url
+
+        property_obj = get_distribution_property(request, property_id)
+        account = get_object_or_404(
+            SocialAccount,
+            id=request.data.get("social_account"),
+            agency=request.user.agency,
+            status=SocialAccount.STATUS_CONNECTED,
+        )
+        asset_type = request.data.get("asset_type") or (
+            "facebook_post" if account.platform == "facebook" else "instagram_post"
+        )
+        valid_asset = "facebook_post" if account.platform == "facebook" else "instagram_post"
+        if asset_type != valid_asset:
+            raise ValidationError({"asset_type": f"Use {valid_asset} for this account."})
+        language = request.data.get("language", "english")
+        if language not in {"english", "nepali"}:
+            raise ValidationError({"language": "Choose english or nepali."})
+        link = None
+        if request.data.get("link"):
+            link = get_object_or_404(
+                PropertyDistributionLink,
+                id=request.data["link"], property=property_obj,
+                agency=request.user.agency, is_active=True,
+            )
+        url = tracked_url(link, request) if link else canonical_property_url(property_obj)
+        image_bytes = social_image(property_obj, asset_type, url)
+        post = SocialPost(
+            agency=request.user.agency,
+            property=property_obj,
+            social_account=account,
+            platform=account.platform,
+            target_platforms=[account.platform],
+            caption=captions(property_obj, url)[language][account.platform],
+            status=SocialPost.STATUS_DRAFT,
+            created_by=request.user,
+        )
+        post.image.save(f"LP-{property_obj.id:03d}-{asset_type}.jpg", ContentFile(image_bytes), save=False)
+        post.save()
+        if request.data.get("publish_now"):
+            publish_social_post(post, platforms=[account.platform])
+            post.refresh_from_db()
+        return Response(
+            SocialPostSerializer(post, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
