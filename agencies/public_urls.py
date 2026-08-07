@@ -4,6 +4,7 @@ from .public_views import (
     PublicAgencyContactView,
     PublicAgencyDetailView,
     PublicAgencySlugDetailView,
+    PublicAgencyDomainDetailView,
     PublicAgentListView,
     PublicAgentDetailView,
 )
@@ -11,14 +12,19 @@ from .public_views import (
 
 urlpatterns = [
     path(
-        "agencies/<str:license_number>/",
-        PublicAgencyDetailView.as_view(),
-        name="public-agency-detail"
-    ),
-    path(
         "agencies/by-slug/<slug:slug>/",
         PublicAgencySlugDetailView.as_view(),
         name="public-agency-detail-by-slug",
+    ),
+    path(
+        "agencies/by-domain/",
+        PublicAgencyDomainDetailView.as_view(),
+        name="public-agency-detail-by-domain",
+    ),
+    path(
+        "agencies/<str:license_number>/",
+        PublicAgencyDetailView.as_view(),
+        name="public-agency-detail"
     ),
     path(
         "agencies/<str:license_number>/agents/",

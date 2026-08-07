@@ -1,11 +1,12 @@
 from django.conf import settings
 from django.urls import path
 
-from .views import CurrentAgencyView, TestMarkAgencyPaidView
+from .views import CurrentAgencyView, LocalizationView, TestMarkAgencyPaidView
 
 
 urlpatterns = [
     path("me/", CurrentAgencyView.as_view(), name="current-agency"),
+    path("localization/", LocalizationView.as_view(), name="agency-localization"),
 ]
 
 if settings.DEBUG:

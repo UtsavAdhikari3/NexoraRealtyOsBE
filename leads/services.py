@@ -1,27 +1,12 @@
-import re
-
 from django.db.models import Q
+from agencies.localization import normalize_nepal_phone
 
-from .models import Lead
+from .models import Lead, LeadStatusHistory
 
 
 def normalize_phone(value):
     """Normalize Nepal phone numbers while retaining international compatibility."""
-    raw_value = (value or "").strip()
-    digits = re.sub(r"\D", "", raw_value)
-
-    if digits.startswith("00977"):
-        digits = digits[5:]
-    elif digits.startswith("977") and len(digits) > 10:
-        digits = digits[3:]
-
-    if len(digits) == 10 and digits.startswith("9"):
-        return digits
-
-    if raw_value.startswith("+") and digits:
-        return f"+{digits}"
-
-    return digits or raw_value
+    return normalize_nepal_phone(value)
 
 
 def get_or_create_public_lead(
@@ -35,6 +20,7 @@ def get_or_create_public_lead(
     purpose="",
     property_type="",
     notes="",
+    property_obj=None,
 ):
     normalized_phone = normalize_phone(phone)
     normalized_email = (email or "").lower().strip()
@@ -82,9 +68,14 @@ def get_or_create_public_lead(
             changed_fields.append("updated_at")
             lead.save(update_fields=changed_fields)
 
+        if not lead.assigned_agent_id or not lead.assigned_at:
+            from .automation import apply_lead_automation
+            apply_lead_automation(lead, property_obj=property_obj)
+            lead.refresh_from_db()
+
         return lead, False
 
-    return Lead.objects.create(
+    lead = Lead.objects.create(
         agency=agency,
         assigned_agent=assigned_agent,
         full_name=full_name.strip(),
@@ -96,4 +87,13 @@ def get_or_create_public_lead(
         purpose=purpose,
         property_type=property_type,
         notes=notes,
-    ), True
+    )
+    LeadStatusHistory.objects.create(
+        agency=agency,
+        lead=lead,
+        to_status=lead.status,
+    )
+    from .automation import apply_lead_automation
+    apply_lead_automation(lead, property_obj=property_obj)
+    lead.refresh_from_db()
+    return lead, True

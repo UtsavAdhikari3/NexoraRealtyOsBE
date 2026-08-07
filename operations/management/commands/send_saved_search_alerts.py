@@ -35,7 +35,7 @@ class Command(BaseCommand):
             if not matches:
                 continue
             links = "\n".join(
-                f"- {item.title}: {getattr(settings, 'PUBLIC_FRONTEND_URL', 'http://localhost:5173')}/agency/{saved.agency.slug}/properties/{item.id}"
+                f"- {item.title}: {getattr(settings, 'STOREFRONT_PUBLIC_URL', 'http://localhost:3000')}/agency/{saved.agency.slug}/properties/{item.id}"
                 for item in matches
             )
             send_mail(

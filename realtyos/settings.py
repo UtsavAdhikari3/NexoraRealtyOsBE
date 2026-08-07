@@ -198,9 +198,14 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'en'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kathmandu'
+
+LANGUAGES = [
+    ('en', 'English'),
+    ('ne', 'नेपाली'),
+]
 
 USE_I18N = True
 
@@ -243,6 +248,7 @@ INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS = float(
     os.getenv("INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS", "2")
 )
 PUBLIC_FRONTEND_URL = os.getenv("PUBLIC_FRONTEND_URL", "http://localhost:5173")
+STOREFRONT_PUBLIC_URL = os.getenv("STOREFRONT_PUBLIC_URL", "http://localhost:3000")
 INSTAGRAM_PUBLISH_DEADLINE_SECONDS = float(
     os.getenv("INSTAGRAM_PUBLISH_DEADLINE_SECONDS", "75")
 )

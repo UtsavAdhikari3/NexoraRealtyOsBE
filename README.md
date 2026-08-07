@@ -10,10 +10,12 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
 - Property CRUD, assignment, publication, filtering, and media
 - Public agency, agent, listing, inquiry, and site-visit APIs
 - Phone normalization and duplicate public-lead reuse
-- Lead pipeline, property interests, interaction history, and status audit trail
+- Unified lead pipeline with property interests, interaction history, status audit trail, configurable assignment rules, duplicate checks, response SLAs, escalation, and inactivity reassignment
 - Due/overdue follow-ups and idempotent reminders
 - Site-visit scheduling, outcomes, cancellations, and reminders
 - Property view/contact conversion events and dashboard summaries
+- Listing distribution with branded social assets, watermarked media, print PDFs, QR/short links, bilingual copy, portal CSVs, and source attribution
+- Nepal localization with English/Nepali interfaces, AD/BS conversion, Nepal time, Nepali digits, lakh/crore and phone formatting, address hierarchy, editable message templates, and Unicode Nepali PDFs
 - Meta account connection plus Facebook and Instagram image publishing/scheduling
 - OpenAPI, Swagger UI, ReDoc, health checks, and request throttling
 - Contacts and owners; deals, offers, token amounts, commissions, and closing
@@ -23,6 +25,7 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
 - Smart property matching, comparison, advanced reports, and agent performance
 - Custom fields and configurable lead/deal pipeline stages
 - Customer accounts, favorites, saved-search alerts, and appointment booking
+- Configurable published agency websites, custom domains, reusable content sections, public submissions, and moderated agent reviews
 - Public map search, canonical share URLs, SEO metadata, and video tours
 - Stripe Checkout, signed webhooks, billing portal, and payment history
 - Super-admin metrics and agency activation/suspension controls
@@ -42,8 +45,9 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
    - Swagger: `http://localhost:8000/api/docs/`
    - ReDoc: `http://localhost:8000/api/redoc/`
    - Health: `http://localhost:8000/api/health/`
+   - Agency storefront: `http://localhost:3000/agency/<agency-slug>`
 
-The container waits for PostgreSQL, applies migrations, collects static files, and starts Gunicorn as an unprivileged user. PostgreSQL, media, and static data use persistent Docker volumes.
+The API container waits for PostgreSQL, applies migrations, collects static files, and starts Gunicorn as an unprivileged user. Compose also builds the sibling Next.js storefront with separate browser and Docker-internal API addresses. PostgreSQL, media, and static data use persistent Docker volumes.
 
 ## Validation
 
@@ -86,6 +90,7 @@ Docker Compose includes a scheduler service that runs these jobs every five minu
 - Set `DEBUG=False`.
 - Set a strong `DJANGO_SECRET_KEY`; startup fails without one in production.
 - Set exact `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, and `CSRF_TRUSTED_ORIGINS`.
+- Set `STOREFRONT_PUBLIC_API_URL`, `STOREFRONT_DEFAULT_AGENCY_SLUG`, `STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER`, and `STOREFRONT_PUBLIC_URL` for the deployed storefront.
 - Configure SMTP and persistent/object media storage.
 - Configure `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and the three `STRIPE_PRICE_*` IDs. Point Stripe webhooks to `/api/webhooks/stripe/`.
 - Enable HTTPS redirect and secure cookies behind a trusted reverse proxy.

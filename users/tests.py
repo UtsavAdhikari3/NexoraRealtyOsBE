@@ -415,8 +415,8 @@ class AgentProfileAPITestCase(APITestCase):
             response.data["current_listing_ids"],
             [f"LP-{self.current_property.id:03d}"],
         )
-        self.assertNotIn("reviews", response.data)
-        self.assertNotIn("rating", response.data)
+        self.assertEqual(response.data["reviews"], [])
+        self.assertEqual(response.data["rating"], 0)
 
     def test_public_agent_detail_is_agency_scoped_and_hides_inactive_agents(self):
         wrong_agency = self.client.get(

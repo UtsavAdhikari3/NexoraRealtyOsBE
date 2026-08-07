@@ -3,6 +3,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from urllib.parse import urlparse
 
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny
@@ -25,6 +26,7 @@ def get_public_agencies_queryset():
     return Agency.objects.filter(
         payment_status=Agency.PAYMENT_PAID,
         is_active=True,
+        is_website_published=True,
     ).filter(
         Q(subscription_expires_at__isnull=True)
         | Q(subscription_expires_at__gt=timezone.now())
@@ -47,6 +49,27 @@ class PublicAgencySlugDetailView(PublicAgencyDetailView):
     lookup_url_kwarg = "slug"
 
 
+class PublicAgencyDomainDetailView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicAgencySerializer
+
+    def get(self, request):
+        raw_domain = request.query_params.get("domain", "").strip().lower()
+        if not raw_domain:
+            return Response(
+                {"domain": ["This query parameter is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        parsed = urlparse(raw_domain if "://" in raw_domain else f"//{raw_domain}")
+        domain = (parsed.hostname or raw_domain).rstrip(".")
+        agency = get_object_or_404(
+            get_public_agencies_queryset(),
+            custom_domain__iexact=domain,
+        )
+        return Response(self.serializer_class(agency, context={"request": request}).data)
+
+
 class PublicAgentListView(generics.ListAPIView):
     serializer_class = PublicAgentSerializer
     permission_classes = [AllowAny]
@@ -62,7 +85,7 @@ class PublicAgentListView(generics.ListAPIView):
             agency=agency,
             role=User.ROLE_AGENT,
             is_active=True,
-        ).prefetch_related("assigned_properties").order_by("full_name")
+        ).prefetch_related("assigned_properties", "public_reviews").order_by("full_name")
 
 
 class PublicAgentDetailView(generics.RetrieveAPIView):
@@ -79,7 +102,7 @@ class PublicAgentDetailView(generics.RetrieveAPIView):
             agency=agency,
             role=User.ROLE_AGENT,
             is_active=True,
-        ).prefetch_related("assigned_properties")
+        ).prefetch_related("assigned_properties", "public_reviews")
 
 
 class PublicAgencyContactView(APIView):
@@ -109,6 +132,7 @@ class PublicAgencyContactView(APIView):
             agency=agency,
             lead=lead,
             interaction_type="note",
+            direction="inbound",
             note=data.get("message") or "Public agency contact form submitted.",
         )
 

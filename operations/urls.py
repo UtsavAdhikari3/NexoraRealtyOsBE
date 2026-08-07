@@ -21,6 +21,8 @@ router.register("audit-logs", views.AuditLogViewSet, basename="audit-log")
 router.register("availability", views.AppointmentAvailabilityViewSet, basename="availability")
 router.register("appointments", views.AppointmentViewSet, basename="appointment")
 router.register("subscriptions", views.SubscriptionViewSet, basename="subscription")
+router.register("website-submissions", views.PublicSubmissionViewSet, basename="website-submission")
+router.register("agent-reviews", views.AgentReviewViewSet, basename="agent-review")
 
 urlpatterns = [
     path("", include(router.urls)),

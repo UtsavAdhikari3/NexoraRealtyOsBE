@@ -194,6 +194,10 @@ class PublicSiteVisitRequestSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     phone = serializers.CharField(max_length=30)
     email = serializers.EmailField(required=False, allow_blank=True)
+    utm_source = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    utm_medium = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    utm_campaign = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    distribution_code = serializers.CharField(max_length=16, required=False, allow_blank=True)
 
     preferred_datetime = serializers.DateTimeField()
 

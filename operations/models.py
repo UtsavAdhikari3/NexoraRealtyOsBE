@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -137,6 +138,7 @@ class Document(AgencyScopedModel):
     category = models.CharField(max_length=30, choices=CATEGORY_CHOICES, default="other")
     file = models.FileField(upload_to="documents/")
     description = models.TextField(blank=True)
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     property = models.ForeignKey(Property, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     deal = models.ForeignKey(Deal, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     contact = models.ForeignKey(Contact, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
@@ -315,6 +317,90 @@ class SavedSearch(AgencyScopedModel):
     filters = models.JSONField(default=dict)
     alerts_enabled = models.BooleanField(default=True)
     last_notified_at = models.DateTimeField(null=True, blank=True)
+
+
+class PublicSubmission(AgencyScopedModel):
+    KIND_CHOICES = [
+        ("contact", "Contact"),
+        ("property_inquiry", "Property inquiry"),
+        ("valuation", "Home valuation"),
+        ("newsletter", "Newsletter"),
+        ("buyer_guide", "Buyer guide"),
+        ("career", "Career"),
+        ("demo", "Product demo"),
+        ("listing_report", "Listing report"),
+    ]
+    STATUS_CHOICES = [
+        ("new", "New"),
+        ("in_progress", "In progress"),
+        ("completed", "Completed"),
+        ("spam", "Spam"),
+    ]
+
+    kind = models.CharField(max_length=30, choices=KIND_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="new")
+    full_name = models.CharField(max_length=255, blank=True)
+    email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    source_page = models.CharField(max_length=500, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True)
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="public_submissions",
+    )
+    agent = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="public_submissions",
+    )
+    lead = models.ForeignKey(
+        Lead,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="public_submissions",
+    )
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["agency", "kind", "status", "created_at"])]
+
+
+class AgentReview(AgencyScopedModel):
+    agent = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="public_reviews",
+    )
+    reviewer_name = models.CharField(max_length=255)
+    reviewer_email = models.EmailField(blank=True)
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    title = models.CharField(max_length=160, blank=True)
+    comment = models.TextField()
+    is_approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_agent_reviews",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["agency", "agent", "is_approved", "created_at"])]
 
 
 class AppointmentAvailability(AgencyScopedModel):

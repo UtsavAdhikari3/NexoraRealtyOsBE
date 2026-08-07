@@ -21,6 +21,7 @@ Paid, active, non-expired agencies can use protected APIs. Existing JWTs are rej
 | Method | Endpoint | Purpose |
 |---|---|---|
 | GET/PATCH | `/api/agencies/me/` | Read/update current agency branding and profile |
+| GET/POST | `/api/agencies/localization/` | Read localization defaults/current AD and BS dates, or convert a date between AD and BS |
 | GET/POST | `/api/agents/` | List/create agents |
 | GET/PATCH | `/api/agents/me/profile/` | Agent-only self-service professional profile |
 | GET/PATCH/DELETE | `/api/agents/{id}/` | Manage or deactivate an agent |
@@ -35,6 +36,7 @@ Public routes only expose active, paid, non-expired agencies and available publi
 |---|---|---|
 | GET | `/api/public/agencies/{license}/` | Agency profile |
 | GET | `/api/public/agencies/by-slug/{slug}/` | Agency profile by slug |
+| GET | `/api/public/agencies/by-domain/?domain={host}` | Published agency profile by custom domain |
 | GET | `/api/public/agencies/{license}/agents/` | Active public agents |
 | GET | `/api/public/agencies/{license}/agents/{id}/` | Public agent profile and listing/deal summary |
 | POST | `/api/public/agencies/{license}/contact/` | General contact lead capture |
@@ -45,6 +47,8 @@ Public routes only expose active, paid, non-expired agencies and available publi
 | POST | `/api/public/agencies/{license}/properties/{id}/inquire/` | Property inquiry |
 | POST | `/api/public/agencies/{license}/properties/{id}/request-site-visit/` | Visit request |
 | POST | `/api/public/agencies/{license}/properties/{id}/events/` | View/call/WhatsApp/Viber conversion event |
+| POST | `/api/public/agencies/{slug}/submissions/` | Contact, inquiry, valuation, newsletter, guide, career, or demo submission |
+| POST | `/api/public/agencies/{slug}/agents/{id}/reviews/` | Submit an agent review for moderation |
 
 Supported listing query parameters include `property_type`, `purpose`, `location`, `province`, `district`, `city`, `price_min`, `price_max`, `bedrooms`, `bathrooms`, `furnishing_status`, `facing_direction`, `land_area_min`, `land_area_max`, `road_access_min`, `featured`, `search`, and `ordering` (`price`, `-price`, `newest`, `oldest`).
 
@@ -72,6 +76,14 @@ Only `available` properties can remain published. Agents create drafts assigned 
 | GET/POST | `/api/leads/{id}/interactions/` | Calls, notes, meetings, and follow-ups |
 | POST | `/api/leads/{id}/complete-follow-up/` | Complete action and optionally schedule next one |
 | GET | `/api/leads/{id}/timeline/` | Interactions, stage history, and visits |
+| GET/PATCH | `/api/leads/automation/settings/` | Read or configure agency routing, capacity, SLA, reminder, and inactivity thresholds |
+| GET/POST | `/api/leads/automation/rules/` | Ordered property, location, property-type, listing-agent, specific-agent, and round-robin rules |
+| GET/PATCH/DELETE | `/api/leads/automation/rules/{id}/` | Manage an assignment rule |
+| GET | `/api/leads/automation/dashboard/` | Workload, overdue-response, duplicate, and per-agent response metrics |
+| GET | `/api/leads/automation/duplicates/` | Review detected duplicate leads; accepts a `status` filter |
+| PATCH | `/api/leads/automation/duplicates/{id}/` | Confirm or dismiss a duplicate flag |
+| GET | `/api/leads/automation/events/` | Recent routing, response, reminder, escalation, and reassignment events |
+| POST | `/api/leads/automation/process/` | Manager-triggered escalation and inactivity check |
 
 Use the `follow_up` list filter with `due_today`, `overdue`, `upcoming`, or `none`. Marking a lead `lost` requires `lost_reason`.
 
@@ -123,6 +135,22 @@ Each target is recorded in `publish_results`. Overall statuses are:
 - `failed`: no target succeeded.
 
 A retry skips already published results, preventing duplicate posts on the platform that previously succeeded. Partial responses use HTTP `207`; total upstream failure uses HTTP `502`.
+
+## Listing distribution toolkit
+
+Authenticated agency users can generate and download marketing assets for properties they manage. Owners and managers can also export multiple agency listings; agents are restricted to their assigned listings.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/properties/{id}/distribution/` | Captions, portal copy, asset catalogue, links, and attribution totals |
+| GET/POST | `/api/properties/{id}/distribution/links/` | List or create source-tracked short links |
+| PATCH/DELETE | `/api/properties/distribution/links/{id}/` | Enable, disable, edit, or remove a tracked link |
+| GET | `/api/properties/{id}/distribution/assets/{type}/` | Download a social image, QR, PDF, CSV, watermarked ZIP, or full package |
+| POST | `/api/properties/{id}/distribution/social-draft/` | Create or immediately publish a generated Meta feed post |
+| GET | `/api/properties/distribution/portal-export/?ids=1,2` | Export selected listings in portal-ready CSV format |
+| GET | `/api/public/s/{code}/` | Count a distribution click and redirect to the public listing with attribution |
+
+Asset types are `facebook_post`, `instagram_post`, `instagram_story`, `watermarked_images`, `brochure`, `window_card`, `qr_code`, `portal_csv`, and `media_package`. Pass `?link={distribution_link_id}` when downloading an asset to embed that tracked URL in its QR/copy. Public inquiry and site-visit payloads accept `utm_source`, `utm_medium`, `utm_campaign`, and `distribution_code`.
 
 ## Unified social inbox
 

@@ -21,22 +21,25 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 
 from agencies.models import Agency
-from leads.models import Lead
+from agencies.public_views import get_public_agencies_queryset
+from leads.models import Lead, LeadInteraction
+from leads.services import get_or_create_public_lead
 from properties.models import Property
 from users.models import AgencyUser
 from .models import (
-    Appointment, AppointmentAvailability, AuditLog, Contact, CustomerProfile,
+    AgentReview, Appointment, AppointmentAvailability, AuditLog, Contact, CustomerProfile,
     CustomFieldDefinition, Deal, Document, Invitation, Lease, Notification,
-    Offer, Owner, PipelineStage, SavedProperty, SavedSearch, Subscription,
-    SubscriptionPlan, Task,
+    Offer, Owner, PipelineStage, PublicSubmission, SavedProperty, SavedSearch,
+    Subscription, SubscriptionPlan, Task,
 )
 from .serializers import (
-    AppointmentAvailabilitySerializer, AppointmentSerializer, AuditLogSerializer,
+    AgentReviewSerializer, AppointmentAvailabilitySerializer, AppointmentSerializer, AuditLogSerializer,
     ContactSerializer, CustomerLoginSerializer, CustomerProfileSerializer, CustomerRegistrationSerializer,
     CustomFieldDefinitionSerializer, DealSerializer, DocumentSerializer,
     InvitationAcceptSerializer, InvitationSerializer, LeaseSerializer,
     NotificationSerializer, OfferSerializer, OwnerSerializer,
-    PipelineStageSerializer, SavedPropertySerializer, SavedSearchSerializer,
+    PipelineStageSerializer, PublicAgentReviewSerializer, PublicSubmissionSerializer,
+    SavedPropertySerializer, SavedSearchSerializer,
     SubscriptionPlanSerializer, SubscriptionSerializer, TaskSerializer,
     TeamMemberSerializer,
     PlatformAgencySerializer,
@@ -111,6 +114,55 @@ class AgencyModelViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only owners and managers can delete records.")
         create_audit(self.request, instance, "deleted")
         instance.delete()
+
+
+class PublicSubmissionViewSet(AgencyModelViewSet):
+    queryset = PublicSubmission.objects.select_related("property", "agent", "lead")
+    serializer_class = PublicSubmissionSerializer
+    search_fields = ("full_name", "email", "phone", "message")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        kind = self.request.query_params.get("kind")
+        status_value = self.request.query_params.get("status")
+        if kind:
+            queryset = queryset.filter(kind=kind)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        return queryset
+
+    def restrict_agent_queryset(self, queryset, user):
+        return queryset.filter(Q(agent=user) | Q(lead__assigned_agent=user))
+
+    def perform_update(self, serializer):
+        previous_status = serializer.instance.status
+        instance = serializer.save()
+        if instance.status in {"completed", "spam"} and previous_status != instance.status:
+            instance.processed_at = timezone.now()
+            instance.save(update_fields=["processed_at", "updated_at"])
+        create_audit(self.request, instance, "updated")
+
+
+class AgentReviewViewSet(AgencyModelViewSet):
+    queryset = AgentReview.objects.select_related("agent", "approved_by")
+    serializer_class = AgentReviewSerializer
+    search_fields = ("reviewer_name", "reviewer_email", "title", "comment")
+
+    def restrict_agent_queryset(self, queryset, user):
+        return queryset.filter(agent=user)
+
+    def perform_update(self, serializer):
+        approving = serializer.validated_data.get("is_approved")
+        if approving is not None and self.request.user.role not in MANAGER_ROLES:
+            raise PermissionDenied("Only owners or managers can moderate reviews.")
+        moderation_fields = {}
+        if approving is not None:
+            moderation_fields = {
+                "approved_by": self.request.user if approving else None,
+                "approved_at": timezone.now() if approving else None,
+            }
+        instance = serializer.save(**moderation_fields)
+        create_audit(self.request, instance, "updated")
 
 
 class ContactViewSet(AgencyModelViewSet):
@@ -208,12 +260,12 @@ class OfferViewSet(AgencyModelViewSet):
 
 
 class DocumentViewSet(AgencyModelViewSet):
-    queryset = Document.objects.select_related("uploaded_by", "property", "deal", "contact", "owner")
+    queryset = Document.objects.select_related("uploaded_by", "lead", "property", "deal", "contact", "owner")
     serializer_class = DocumentSerializer
     search_fields = ("title", "description")
 
     def restrict_agent_queryset(self, queryset, user):
-        return queryset.filter(Q(uploaded_by=user) | Q(deal__assigned_agent=user) | Q(property__assigned_agent=user)).distinct()
+        return queryset.filter(Q(uploaded_by=user) | Q(lead__assigned_agent=user) | Q(deal__assigned_agent=user) | Q(property__assigned_agent=user)).distinct()
 
     def perform_create(self, serializer):
         instance = serializer.save(agency=self.request.user.agency, uploaded_by=self.request.user)
@@ -576,12 +628,140 @@ def customer_from_request(request, agency):
     return get_object_or_404(CustomerProfile, agency=agency, access_token=token)
 
 
+@extend_schema(request=PublicSubmissionSerializer, responses={201: OpenApiTypes.OBJECT})
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([PublicSubmissionRateThrottle])
+@transaction.atomic
+def public_submission_create(request, slug):
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    payload = request.data.copy()
+    payload.pop("status", None)
+    serializer = PublicSubmissionSerializer(data=payload, context={"request": request})
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    property_obj = data.get("property")
+    agent = data.get("agent") or getattr(property_obj, "assigned_agent", None)
+
+    if property_obj and property_obj.agency_id != agency.id:
+        raise ValidationError({"property": "Property does not belong to this agency."})
+    if agent and agent.agency_id != agency.id:
+        raise ValidationError({"agent": "Agent does not belong to this agency."})
+
+    metadata = data.get("metadata") or {}
+    message = data.get("message", "")
+    lead = None
+    if data.get("phone"):
+        lead_notes = message
+        if metadata:
+            lead_notes = f"{message}\n\nWebsite submission details: {json.dumps(metadata, ensure_ascii=False)}".strip()
+        lead, _ = get_or_create_public_lead(
+            agency=agency,
+            assigned_agent=data.get("agent"),
+            full_name=data.get("full_name") or data.get("email") or "Website visitor",
+            phone=data["phone"],
+            email=data.get("email", ""),
+            preferred_location=metadata.get("location") or metadata.get("address", ""),
+            purpose=metadata.get("purpose", ""),
+            property_type=metadata.get("property_type", ""),
+            notes=lead_notes,
+            property_obj=property_obj,
+        )
+        agent = lead.assigned_agent or agent
+        custom_data = dict(lead.custom_data or {})
+        custom_data.update({"public_submission_kind": data["kind"], **metadata})
+        lead.custom_data = custom_data
+        lead.save(update_fields=["custom_data", "updated_at"])
+        LeadInteraction.objects.create(
+            agency=agency,
+            lead=lead,
+            agent=agent,
+            interaction_type="note",
+            direction="inbound",
+            note=message or f"Public {data['kind'].replace('_', ' ')} submission received.",
+        )
+
+    submission = serializer.save(
+        agency=agency,
+        agent=agent,
+        lead=lead,
+        ip_address=client_ip(request),
+        user_agent=request.headers.get("User-Agent", "")[:500],
+    )
+    if submission.kind == "listing_report" and submission.property:
+        from properties.freshness import record_property_history
+        record_property_history(
+            submission.property, "report_received", "Public listing report received",
+            changes={"submission_id": submission.id, "reason": submission.metadata.get("reason", "")},
+            note=submission.message,
+        )
+
+    recipients = AgencyUser.objects.filter(agency=agency, is_active=True)
+    if agent:
+        recipients = recipients.filter(Q(id=agent.id) | Q(role__in=[AgencyUser.ROLE_AGENCY_OWNER, AgencyUser.ROLE_AGENCY_MANAGER]))
+    else:
+        recipients = recipients.filter(role__in=[AgencyUser.ROLE_AGENCY_OWNER, AgencyUser.ROLE_AGENCY_MANAGER])
+    Notification.objects.bulk_create([
+        Notification(
+            agency=agency,
+            user=user,
+            title=("Listing reported by a visitor" if submission.kind == "listing_report" else f"New {submission.get_kind_display().lower()} submission"),
+            message=submission.full_name or submission.email or "Website visitor",
+            category="website_submission",
+            link=(f"/inbox?lead={lead.id}" if lead else f"/website-submissions?submission={submission.id}"),
+        )
+        for user in recipients
+    ])
+    return Response(
+        {"id": submission.id, "kind": submission.kind, "message": "Submission received successfully."},
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@extend_schema(request=PublicAgentReviewSerializer, responses={201: OpenApiTypes.OBJECT})
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([PublicSubmissionRateThrottle])
+def public_agent_review_create(request, slug, agent_id):
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agent = get_object_or_404(
+        AgencyUser,
+        id=agent_id,
+        agency=agency,
+        role=AgencyUser.ROLE_AGENT,
+        is_active=True,
+    )
+    serializer = PublicAgentReviewSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    review = serializer.save(agency=agency, agent=agent)
+    managers = AgencyUser.objects.filter(
+        agency=agency,
+        is_active=True,
+        role__in=[AgencyUser.ROLE_AGENCY_OWNER, AgencyUser.ROLE_AGENCY_MANAGER],
+    )
+    Notification.objects.bulk_create([
+        Notification(
+            agency=agency,
+            user=user,
+            title="Agent review awaiting approval",
+            message=f"{review.reviewer_name} reviewed {agent.full_name}",
+            category="agent_review",
+            link=f"/agent-reviews?review={review.id}",
+        )
+        for user in managers
+    ])
+    return Response(
+        {"id": review.id, "message": "Review submitted for moderation."},
+        status=status.HTTP_201_CREATED,
+    )
+
+
 @extend_schema(request=CustomerRegistrationSerializer, responses={201: CustomerProfileSerializer})
 @api_view(["POST"])
 @permission_classes([AllowAny])
 @throttle_classes([PublicSubmissionRateThrottle])
 def customer_register(request, slug):
-    agency = get_object_or_404(Agency, slug=slug, is_active=True)
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
     serializer = CustomerRegistrationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     email = serializer.validated_data["email"].lower()
@@ -598,7 +778,7 @@ def customer_register(request, slug):
 @permission_classes([AllowAny])
 @throttle_classes([PublicSubmissionRateThrottle])
 def customer_login(request, slug):
-    agency = get_object_or_404(Agency, slug=slug, is_active=True)
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
     serializer = CustomerLoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     customer = CustomerProfile.objects.filter(agency=agency, email__iexact=serializer.validated_data["email"]).first()
@@ -612,7 +792,7 @@ def customer_login(request, slug):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def customer_saved_properties(request, slug):
-    agency = get_object_or_404(Agency, slug=slug, is_active=True)
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
     customer = customer_from_request(request, agency)
     if request.method == "GET":
         return Response(SavedPropertySerializer(customer.saved_properties.select_related("property"), many=True).data)
@@ -627,7 +807,7 @@ def customer_saved_properties(request, slug):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def customer_saved_searches(request, slug):
-    agency = get_object_or_404(Agency, slug=slug, is_active=True)
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
     customer = customer_from_request(request, agency)
     if request.method == "GET":
         return Response(SavedSearchSerializer(customer.saved_searches.all(), many=True).data)
@@ -641,7 +821,7 @@ def customer_saved_searches(request, slug):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def public_appointments(request, slug):
-    agency = get_object_or_404(Agency, slug=slug, is_active=True)
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
     if request.method == "GET":
         slots = AppointmentAvailability.objects.filter(agency=agency, is_active=True).select_related("agent")
         return Response(AppointmentAvailabilitySerializer(slots, many=True).data)

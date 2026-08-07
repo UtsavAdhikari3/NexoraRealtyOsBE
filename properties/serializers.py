@@ -1,9 +1,15 @@
-from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
+from django.utils import timezone
+from datetime import timedelta
 
 from rest_framework import serializers
 
-from .models import Property, PropertyMedia
+from .models import (
+    Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument,
+    PropertyHistory, PropertyDuplicateFlag,
+    PropertyDistributionLink,
+)
+from .area import conversion_payload, price_per_area
 
 
 class PropertyMediaSerializer(serializers.ModelSerializer):
@@ -88,6 +94,187 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
         return instance
 
 
+class PropertyVerificationDocumentSerializer(serializers.ModelSerializer):
+    document_type_display = serializers.CharField(source="get_document_type_display", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PropertyVerificationDocument
+        fields = [
+            "id", "document_type", "document_type_display", "status", "status_display",
+            "file", "external_url", "document_number", "issued_date", "expiry_date",
+            "notes", "reviewed_by", "reviewed_by_name", "reviewed_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "document_type", "reviewed_by", "reviewed_by_name", "reviewed_at",
+            "created_at", "updated_at",
+        ]
+
+    def validate_file(self, value):
+        if value is None:
+            return value
+        max_size_mb = getattr(settings, "MAX_UPLOAD_SIZE_MB", 15)
+        if value.size > max_size_mb * 1024 * 1024:
+            raise serializers.ValidationError(f"File size cannot exceed {max_size_mb} MB.")
+        allowed = {
+            "image/jpeg", "image/png", "image/webp", "application/pdf",
+        }
+        content_type = getattr(value, "content_type", "")
+        if content_type and content_type not in allowed:
+            raise serializers.ValidationError("Upload a PDF, JPEG, PNG, or WebP document.")
+        return value
+
+    def validate(self, attrs):
+        issued = attrs.get("issued_date", getattr(self.instance, "issued_date", None))
+        expiry = attrs.get("expiry_date", getattr(self.instance, "expiry_date", None))
+        if issued and expiry and expiry < issued:
+            raise serializers.ValidationError({"expiry_date": "Expiry date cannot be before issued date."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        new_file = validated_data.get("file")
+        new_url = validated_data.get("external_url")
+        if instance.status == "missing" and (new_file or new_url) and "status" not in validated_data:
+            validated_data["status"] = "received"
+        if validated_data.get("status") in {"approved", "rejected", "not_applicable"}:
+            request = self.context.get("request")
+            validated_data["reviewed_by"] = request.user if request else None
+            validated_data["reviewed_at"] = timezone.now()
+        elif "status" in validated_data:
+            validated_data["reviewed_by"] = None
+            validated_data["reviewed_at"] = None
+        return super().update(instance, validated_data)
+
+
+class PropertyVerificationSerializer(serializers.ModelSerializer):
+    documents = PropertyVerificationDocumentSerializer(many=True, read_only=True)
+    verification_level = serializers.CharField(read_only=True)
+    verification_level_display = serializers.CharField(read_only=True)
+    completed_milestones = serializers.SerializerMethodField()
+    approved_document_count = serializers.SerializerMethodField()
+    total_document_count = serializers.SerializerMethodField()
+    updated_by_name = serializers.CharField(source="updated_by.full_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PropertyVerification
+        fields = [
+            "id", "verification_level", "verification_level_display",
+            "owner_identity_verified", "owner_identity_verified_at",
+            "ownership_document_received", "ownership_document_received_at",
+            "physically_inspected", "physically_inspected_at",
+            "documents_reviewed", "documents_reviewed_at",
+            "fully_verified", "fully_verified_at", "inspection_notes", "review_notes",
+            "completed_milestones", "approved_document_count", "total_document_count",
+            "updated_by", "updated_by_name", "documents", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "owner_identity_verified_at", "ownership_document_received_at",
+            "physically_inspected_at", "documents_reviewed_at", "fully_verified_at",
+            "updated_by", "created_at", "updated_at",
+        ]
+
+    def get_completed_milestones(self, obj):
+        return sum(bool(getattr(obj, field)) for field, _ in obj.MILESTONES)
+
+    def get_approved_document_count(self, obj):
+        return obj.documents.filter(status__in=["approved", "not_applicable"]).count()
+
+    def get_total_document_count(self, obj):
+        return len(PropertyVerificationDocument.DOCUMENT_TYPES)
+
+    def validate(self, attrs):
+        values = {
+            field: attrs.get(field, getattr(self.instance, field, False))
+            for field, _ in PropertyVerification.MILESTONES
+        }
+        seen_false = False
+        for field, _ in PropertyVerification.MILESTONES:
+            if seen_false and values[field]:
+                raise serializers.ValidationError({field: "Complete the previous verification milestones first."})
+            seen_false = seen_false or not values[field]
+
+        documents = self.instance.documents.all() if self.instance else []
+        status_by_type = {document.document_type: document.status for document in documents}
+        if values["ownership_document_received"] and status_by_type.get("lalpurja") == "missing":
+            raise serializers.ValidationError({
+                "ownership_document_received": "Mark the Lalpurja as received before completing this milestone."
+            })
+        if values["documents_reviewed"]:
+            unresolved = [status for status in status_by_type.values() if status not in {"approved", "rejected", "not_applicable"}]
+            if unresolved:
+                raise serializers.ValidationError({"documents_reviewed": "Resolve every checklist document first."})
+        if values["fully_verified"]:
+            incomplete = [status for status in status_by_type.values() if status not in {"approved", "not_applicable"}]
+            if incomplete:
+                raise serializers.ValidationError({"fully_verified": "Every applicable document must be approved."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        for field, _ in PropertyVerification.MILESTONES:
+            if field in validated_data and validated_data[field] != getattr(instance, field):
+                validated_data[f"{field}_at"] = timezone.now() if validated_data[field] else None
+        request = self.context.get("request")
+        validated_data["updated_by"] = request.user if request else None
+        return super().update(instance, validated_data)
+
+
+class PropertyHistorySerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source="actor.full_name", read_only=True, allow_null=True)
+    event_type_display = serializers.CharField(source="get_event_type_display", read_only=True)
+
+    class Meta:
+        model = PropertyHistory
+        fields = ["id", "event_type", "event_type_display", "summary", "changes", "note", "actor_name", "created_at"]
+        read_only_fields = fields
+
+
+class PropertyDuplicateFlagSerializer(serializers.ModelSerializer):
+    candidate_title = serializers.CharField(source="candidate.title", read_only=True)
+    candidate_display_id = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PropertyDuplicateFlag
+        fields = [
+            "id", "candidate", "candidate_title", "candidate_display_id", "score", "reasons",
+            "status", "status_display", "reviewed_by_name", "reviewed_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "candidate", "candidate_title", "candidate_display_id", "score", "reasons",
+            "reviewed_by_name", "reviewed_at", "created_at", "updated_at",
+        ]
+
+    def get_candidate_display_id(self, obj):
+        return f"LP-{obj.candidate_id:03d}"
+
+
+class PropertyDistributionLinkSerializer(serializers.ModelSerializer):
+    short_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PropertyDistributionLink
+        fields = [
+            "id", "code", "label", "source", "medium", "campaign",
+            "short_url", "is_active", "click_count", "last_clicked_at",
+            "created_by", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "code", "short_url", "click_count", "last_clicked_at",
+            "created_by", "created_at", "updated_at",
+        ]
+
+    def get_short_url(self, obj):
+        from .distribution import tracked_url
+        return tracked_url(obj, self.context.get("request"))
+
+    def validate_source(self, value):
+        cleaned = value.strip().lower().replace(" ", "_")
+        if not cleaned:
+            raise serializers.ValidationError("Source is required.")
+        return cleaned
+
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)
 
@@ -96,8 +283,17 @@ class PropertySerializer(serializers.ModelSerializer):
 
     display_property_id = serializers.SerializerMethodField()
     price_per_sqft = serializers.SerializerMethodField()
+    land_area_conversions = serializers.SerializerMethodField()
+    price_per_aana = serializers.SerializerMethodField()
+    price_per_dhur = serializers.SerializerMethodField()
+    price_per_kattha = serializers.SerializerMethodField()
+    price_per_land_sqft = serializers.SerializerMethodField()
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
+    verification = PropertyVerificationSerializer(read_only=True, allow_null=True)
+    freshness_state = serializers.SerializerMethodField()
+    days_until_expiry = serializers.SerializerMethodField()
+    pending_duplicate_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
@@ -105,7 +301,28 @@ class PropertySerializer(serializers.ModelSerializer):
         read_only_fields = (
             "agency",
             "share_slug",
+            "availability_verified_at", "listing_expires_at", "owner_confirmed_at",
+            "withdrawn_at", "requires_republish_approval", "republish_approval_status",
+            "republish_requested_at", "republish_requested_by", "republish_approved_at",
+            "republish_approved_by", "republish_rejection_reason",
         )
+
+    def get_freshness_state(self, obj):
+        if not obj.availability_verified_at or not obj.listing_expires_at:
+            return "unconfirmed"
+        if obj.listing_expires_at <= timezone.now():
+            return "expired"
+        if obj.listing_expires_at <= timezone.now() + timedelta(days=7):
+            return "expiring_soon"
+        return "fresh"
+
+    def get_days_until_expiry(self, obj):
+        if not obj.listing_expires_at:
+            return None
+        return max(0, (obj.listing_expires_at - timezone.now()).days)
+
+    def get_pending_duplicate_count(self, obj):
+        return sum(flag.status == "pending" for flag in obj.duplicate_flags.all())
 
     def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
@@ -128,27 +345,15 @@ class PropertySerializer(serializers.ModelSerializer):
         return f"LP-{obj.id:03d}"
 
     def get_price_per_sqft(self, obj) -> str | None:
-        if not obj.price:
-            return None
+        return price_per_area(obj.price, obj.built_up_area_value, obj.built_up_area_unit, "sqft")
 
-        if not obj.built_up_area_value:
-            return None
+    def get_land_area_conversions(self, obj):
+        return conversion_payload(obj.land_area_value, obj.land_area_unit)
 
-        area = Decimal(str(obj.built_up_area_value))
-
-        if area <= 0:
-            return None
-
-        price = Decimal(str(obj.price))
-
-        price_per_sqft = price / area
-
-        price_per_sqft = price_per_sqft.quantize(
-            Decimal("0.01"),
-            rounding=ROUND_HALF_UP
-        )
-
-        return str(price_per_sqft)
+    def get_price_per_aana(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "aana")
+    def get_price_per_dhur(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "dhur")
+    def get_price_per_kattha(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "kattha")
+    def get_price_per_land_sqft(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "sqft")
 
     def get_furnishing_status_display(self, obj) -> str | None:
         if not obj.furnishing_status:
@@ -181,6 +386,26 @@ class PropertySerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        def current(name, default=None):
+            return attrs.get(name, getattr(self.instance, name, default) if self.instance else default)
+
+        for value_field, unit_field in (
+            ("land_area_value", "land_area_unit"), ("built_up_area_value", "built_up_area_unit"),
+            ("road_access_value", "road_access_unit"),
+            ("major_road_distance_value", "major_road_distance_unit"),
+        ):
+            value, unit = current(value_field), current(unit_field)
+            if value is not None and value <= 0:
+                raise serializers.ValidationError({value_field: "Must be greater than zero."})
+            if value is not None and not unit:
+                raise serializers.ValidationError({unit_field: "Select a unit."})
+        for field in ("mohada_value", "pichhad_value"):
+            if current(field) is not None and current(field) <= 0:
+                raise serializers.ValidationError({field: "Must be greater than zero."})
+        ward = str(current("ward_number", "")).strip()
+        if ward and (not ward.isdigit() or int(ward) < 1 or int(ward) > 99):
+            raise serializers.ValidationError({"ward_number": "Enter a ward number from 1 to 99."})
+
         status_value = attrs.get(
             "status",
             self.instance.status if self.instance else "draft",
@@ -189,16 +414,23 @@ class PropertySerializer(serializers.ModelSerializer):
             "is_published",
             self.instance.is_published if self.instance else False,
         )
+        if "is_published" not in attrs and status_value not in {"available", "reserved", "under_negotiation"}:
+            is_published = False
 
-        if is_published and status_value != "available":
+        if is_published and status_value not in {"available", "reserved", "under_negotiation"}:
             raise serializers.ValidationError(
                 {
                     "is_published": (
-                        "Only properties with status='available' can be published. "
-                        "Set status to 'available' in the same request."
+                        "Only available, reserved, or under-negotiation properties can be published."
                     )
                 }
             )
+
+        withdrawal_reason = attrs.get(
+            "withdrawal_reason", getattr(self.instance, "withdrawal_reason", "") if self.instance else ""
+        )
+        if status_value == "withdrawn" and not str(withdrawal_reason).strip():
+            raise serializers.ValidationError({"withdrawal_reason": "Provide a reason for withdrawal."})
 
         request = self.context.get("request")
         if request and request.user.agency_id:
