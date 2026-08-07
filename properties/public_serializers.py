@@ -1,10 +1,9 @@
-from decimal import Decimal, ROUND_HALF_UP
-
 from rest_framework import serializers
 
 from leads.services import normalize_phone
 
 from .models import Property, PropertyEvent, PropertyMedia
+from .area import conversion_payload, price_per_area
 
 
 class PublicPropertyMediaSerializer(serializers.ModelSerializer):
@@ -37,6 +36,11 @@ class PublicPropertySerializer(serializers.ModelSerializer):
 
     display_property_id = serializers.SerializerMethodField()
     price_per_sqft = serializers.SerializerMethodField()
+    land_area_conversions = serializers.SerializerMethodField()
+    price_per_aana = serializers.SerializerMethodField()
+    price_per_dhur = serializers.SerializerMethodField()
+    price_per_kattha = serializers.SerializerMethodField()
+    price_per_land_sqft = serializers.SerializerMethodField()
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
 
@@ -52,11 +56,13 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "price",
             "currency",
             "price_per_sqft",
+            "price_per_aana", "price_per_dhur", "price_per_kattha", "price_per_land_sqft",
 
             "province",
             "district",
             "city",
             "neighbourhood",
+            "municipality", "ward_number", "tole", "landmark",
             "address",
             "latitude",
             "longitude",
@@ -68,10 +74,14 @@ class PublicPropertySerializer(serializers.ModelSerializer):
 
             "land_area_value",
             "land_area_unit",
+            "land_area_sqft", "land_area_conversions", "land_use_classification",
             "built_up_area_value",
             "built_up_area_unit",
             "road_access_value",
             "road_access_unit",
+            "road_type", "mohada_value", "pichhad_value", "plot_dimension_unit", "plot_shape",
+            "has_water_supply", "has_electricity", "has_drainage", "has_sewage",
+            "major_road_type", "nearest_major_road", "major_road_distance_value", "major_road_distance_unit",
 
             "year_built",
             "parking_spaces",
@@ -141,45 +151,32 @@ class PublicPropertySerializer(serializers.ModelSerializer):
 
     def get_location_display(self, obj) -> str:
         parts = [
-            obj.neighbourhood,
-            obj.city,
+            obj.tole or obj.neighbourhood,
+            f"Ward {obj.ward_number}" if obj.ward_number else "",
+            obj.municipality or obj.city,
             obj.district,
             obj.province,
         ]
 
-        return ", ".join(
-            [
-                part
-                for part in parts
-                if part
-            ]
-        )
+        unique_parts = []
+        seen = set()
+        for part in parts:
+            if part and str(part).casefold() not in seen:
+                unique_parts.append(str(part))
+                seen.add(str(part).casefold())
+        return ", ".join(unique_parts)
 
     def get_display_property_id(self, obj) -> str:
         return f"LP-{obj.id:03d}"
 
     def get_price_per_sqft(self, obj) -> str | None:
-        if not obj.price:
-            return None
+        return price_per_area(obj.price, obj.built_up_area_value, obj.built_up_area_unit, "sqft")
 
-        if not obj.built_up_area_value:
-            return None
-
-        area = Decimal(str(obj.built_up_area_value))
-
-        if area <= 0:
-            return None
-
-        price = Decimal(str(obj.price))
-
-        price_per_sqft = price / area
-
-        price_per_sqft = price_per_sqft.quantize(
-            Decimal("0.01"),
-            rounding=ROUND_HALF_UP
-        )
-
-        return str(price_per_sqft)
+    def get_land_area_conversions(self, obj): return conversion_payload(obj.land_area_value, obj.land_area_unit)
+    def get_price_per_aana(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "aana")
+    def get_price_per_dhur(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "dhur")
+    def get_price_per_kattha(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "kattha")
+    def get_price_per_land_sqft(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "sqft")
 
     def get_furnishing_status_display(self, obj) -> str | None:
         if not obj.furnishing_status:

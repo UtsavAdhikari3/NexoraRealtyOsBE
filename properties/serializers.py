@@ -1,9 +1,9 @@
-from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
 
 from rest_framework import serializers
 
 from .models import Property, PropertyMedia
+from .area import conversion_payload, price_per_area
 
 
 class PropertyMediaSerializer(serializers.ModelSerializer):
@@ -96,6 +96,11 @@ class PropertySerializer(serializers.ModelSerializer):
 
     display_property_id = serializers.SerializerMethodField()
     price_per_sqft = serializers.SerializerMethodField()
+    land_area_conversions = serializers.SerializerMethodField()
+    price_per_aana = serializers.SerializerMethodField()
+    price_per_dhur = serializers.SerializerMethodField()
+    price_per_kattha = serializers.SerializerMethodField()
+    price_per_land_sqft = serializers.SerializerMethodField()
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
 
@@ -128,27 +133,15 @@ class PropertySerializer(serializers.ModelSerializer):
         return f"LP-{obj.id:03d}"
 
     def get_price_per_sqft(self, obj) -> str | None:
-        if not obj.price:
-            return None
+        return price_per_area(obj.price, obj.built_up_area_value, obj.built_up_area_unit, "sqft")
 
-        if not obj.built_up_area_value:
-            return None
+    def get_land_area_conversions(self, obj):
+        return conversion_payload(obj.land_area_value, obj.land_area_unit)
 
-        area = Decimal(str(obj.built_up_area_value))
-
-        if area <= 0:
-            return None
-
-        price = Decimal(str(obj.price))
-
-        price_per_sqft = price / area
-
-        price_per_sqft = price_per_sqft.quantize(
-            Decimal("0.01"),
-            rounding=ROUND_HALF_UP
-        )
-
-        return str(price_per_sqft)
+    def get_price_per_aana(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "aana")
+    def get_price_per_dhur(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "dhur")
+    def get_price_per_kattha(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "kattha")
+    def get_price_per_land_sqft(self, obj): return price_per_area(obj.price, obj.land_area_value, obj.land_area_unit, "sqft")
 
     def get_furnishing_status_display(self, obj) -> str | None:
         if not obj.furnishing_status:
@@ -181,6 +174,26 @@ class PropertySerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        def current(name, default=None):
+            return attrs.get(name, getattr(self.instance, name, default) if self.instance else default)
+
+        for value_field, unit_field in (
+            ("land_area_value", "land_area_unit"), ("built_up_area_value", "built_up_area_unit"),
+            ("road_access_value", "road_access_unit"),
+            ("major_road_distance_value", "major_road_distance_unit"),
+        ):
+            value, unit = current(value_field), current(unit_field)
+            if value is not None and value <= 0:
+                raise serializers.ValidationError({value_field: "Must be greater than zero."})
+            if value is not None and not unit:
+                raise serializers.ValidationError({unit_field: "Select a unit."})
+        for field in ("mohada_value", "pichhad_value"):
+            if current(field) is not None and current(field) <= 0:
+                raise serializers.ValidationError({field: "Must be greater than zero."})
+        ward = str(current("ward_number", "")).strip()
+        if ward and (not ward.isdigit() or int(ward) < 1 or int(ward) > 99):
+            raise serializers.ValidationError({"ward_number": "Enter a ward number from 1 to 99."})
+
         status_value = attrs.get(
             "status",
             self.instance.status if self.instance else "draft",

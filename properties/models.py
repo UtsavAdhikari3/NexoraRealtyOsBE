@@ -35,6 +35,8 @@ class Property(models.Model):
     AREA_UNITS = [
         ("aana", "Aana"),
         ("ropani", "Ropani"),
+        ("paisa", "Paisa"),
+        ("daam", "Daam"),
         ("kattha", "Kattha"),
         ("dhur", "Dhur"),
         ("bigha","Bigha"),
@@ -85,9 +87,19 @@ class Property(models.Model):
     )
 
     # Step 2: Location
-    province = models.CharField(max_length=100)
+    PROVINCE_CHOICES = [
+        ("Koshi", "Koshi Province"), ("Madhesh", "Madhesh Province"),
+        ("Bagmati", "Bagmati Province"), ("Gandaki", "Gandaki Province"),
+        ("Lumbini", "Lumbini Province"), ("Karnali", "Karnali Province"),
+        ("Sudurpashchim", "Sudurpashchim Province"),
+    ]
+    province = models.CharField(max_length=100, choices=PROVINCE_CHOICES)
     district = models.CharField(max_length=100)
     city = models.CharField(max_length=100)
+    municipality = models.CharField(max_length=150, blank=True)
+    ward_number = models.CharField(max_length=20, blank=True)
+    tole = models.CharField(max_length=150, blank=True)
+    landmark = models.CharField(max_length=255, blank=True)
 
     neighbourhood = models.CharField(
         max_length=255,
@@ -128,6 +140,16 @@ class Property(models.Model):
         blank=True
     )
 
+    land_area_sqft = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False, db_index=True
+    )
+    LAND_USE_CHOICES = [
+        ("residential", "Residential"), ("commercial", "Commercial"),
+        ("agricultural", "Agricultural"), ("plotting", "Plotting"),
+        ("mixed_use", "Mixed Use"), ("industrial", "Industrial"),
+    ]
+    land_use_classification = models.CharField(max_length=30, choices=LAND_USE_CHOICES, blank=True)
+
     built_up_area_value = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -152,6 +174,34 @@ class Property(models.Model):
         max_length=20,
         choices=ROAD_UNITS,
         default="ft"
+    )
+
+    ROAD_TYPE_CHOICES = [
+        ("blacktopped", "Blacktopped / Pitched"), ("concrete", "Concrete"),
+        ("gravel", "Gravel"), ("unpaved", "Unpaved"), ("other", "Other"),
+    ]
+    road_type = models.CharField(max_length=30, choices=ROAD_TYPE_CHOICES, blank=True)
+    mohada_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    pichhad_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    plot_dimension_unit = models.CharField(max_length=20, choices=ROAD_UNITS, default="ft")
+    PLOT_SHAPE_CHOICES = [
+        ("rectangular", "Rectangular"), ("square", "Square"), ("regular", "Regular"),
+        ("irregular", "Irregular"), ("triangular", "Triangular"),
+        ("corner", "Corner Plot"), ("other", "Other"),
+    ]
+    plot_shape = models.CharField(max_length=30, choices=PLOT_SHAPE_CHOICES, blank=True)
+    has_water_supply = models.BooleanField(null=True, blank=True)
+    has_electricity = models.BooleanField(null=True, blank=True)
+    has_drainage = models.BooleanField(null=True, blank=True)
+    has_sewage = models.BooleanField(null=True, blank=True)
+    MAJOR_ROAD_TYPE_CHOICES = [
+        ("ring_road", "Ring Road"), ("highway", "Highway"), ("main_road", "Major Road"),
+    ]
+    major_road_type = models.CharField(max_length=30, choices=MAJOR_ROAD_TYPE_CHOICES, blank=True)
+    nearest_major_road = models.CharField(max_length=255, blank=True)
+    major_road_distance_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    major_road_distance_unit = models.CharField(
+        max_length=10, choices=[("m", "Meter"), ("km", "Kilometer")], default="m"
     )
 
     # Example:
@@ -263,17 +313,26 @@ class Property(models.Model):
             models.Index(fields=["agency", "property_type", "purpose"]),
             models.Index(fields=["agency", "assigned_agent", "status"]),
             models.Index(fields=["city", "district"]),
+            models.Index(fields=["district", "municipality", "ward_number"]),
+            models.Index(fields=["land_use_classification", "property_type"]),
         ]
         constraints = [
             models.UniqueConstraint(fields=["agency", "share_slug"], name="unique_agency_property_share_slug"),
         ]
 
     def save(self, *args, **kwargs):
+        from .area import convert_area, rounded
+
+        self.land_area_sqft = (
+            rounded(convert_area(self.land_area_value, self.land_area_unit))
+            if self.land_area_value is not None and self.land_area_unit else None
+        )
         if not self.share_slug:
             from django.utils.text import slugify
             stem = slugify(self.title)[:140] or "listing"
             self.share_slug = f"{stem}-{uuid.uuid4().hex[:8]}"
         changed_fields = set(kwargs.get("update_fields") or [])
+        changed_fields.add("land_area_sqft")
 
         if self.status != "available":
             self.is_published = False

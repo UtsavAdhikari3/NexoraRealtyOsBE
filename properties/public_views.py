@@ -16,6 +16,7 @@ from drf_spectacular.utils import (
 from drf_spectacular.types import OpenApiTypes
 
 from .models import Property, PropertyEvent
+from .area import convert_area
 from .public_serializers import (
     PublicPropertyEventSerializer,
     PublicPropertySerializer,
@@ -155,10 +156,22 @@ class PublicPropertyListView(generics.ListAPIView):
         province = self.request.query_params.get("province")
         district = self.request.query_params.get("district")
         city = self.request.query_params.get("city")
+        municipality = self.request.query_params.get("municipality")
+        ward_number = self.request.query_params.get("ward_number")
+        classification = self.request.query_params.get("land_use_classification")
+        road_type = self.request.query_params.get("road_type")
+        plot_shape = self.request.query_params.get("plot_shape")
+        utility_filters = {
+            "has_water_supply": self.request.query_params.get("has_water_supply"),
+            "has_electricity": self.request.query_params.get("has_electricity"),
+            "has_drainage": self.request.query_params.get("has_drainage"),
+            "has_sewage": self.request.query_params.get("has_sewage"),
+        }
         furnishing = self.request.query_params.get("furnishing_status")
         facing = self.request.query_params.get("facing_direction")
         land_area_min = self.request.query_params.get("land_area_min")
         land_area_max = self.request.query_params.get("land_area_max")
+        land_area_unit = self.request.query_params.get("land_area_unit", "aana")
         road_access_min = self.request.query_params.get("road_access_min")
         ordering = self.request.query_params.get("ordering")
         min_lat = self.request.query_params.get("min_lat")
@@ -178,6 +191,9 @@ class PublicPropertyListView(generics.ListAPIView):
                 | Q(district__icontains=location)
                 | Q(city__icontains=location)
                 | Q(neighbourhood__icontains=location)
+                | Q(municipality__icontains=location)
+                | Q(tole__icontains=location)
+                | Q(landmark__icontains=location)
                 | Q(address__icontains=location)
             )
 
@@ -212,14 +228,29 @@ class PublicPropertyListView(generics.ListAPIView):
             queryset = queryset.filter(district__iexact=district)
         if city:
             queryset = queryset.filter(city__iexact=city)
+        if municipality:
+            queryset = queryset.filter(municipality__iexact=municipality)
+        if ward_number:
+            queryset = queryset.filter(ward_number=ward_number)
+        if classification:
+            queryset = queryset.filter(land_use_classification=classification)
+        if road_type:
+            queryset = queryset.filter(road_type=road_type)
+        if plot_shape:
+            queryset = queryset.filter(plot_shape=plot_shape)
+        for field, value in utility_filters.items():
+            if value in ("true", "false"):
+                queryset = queryset.filter(**{field: value == "true"})
         if furnishing:
             queryset = queryset.filter(furnishing_status=furnishing)
         if facing:
             queryset = queryset.filter(facing_direction=facing)
         if land_area_min is not None:
-            queryset = queryset.filter(land_area_value__gte=land_area_min)
+            try: queryset = queryset.filter(land_area_sqft__gte=convert_area(land_area_min, land_area_unit))
+            except ValueError: raise ValidationError({"land_area_unit": "Unsupported area unit."})
         if land_area_max is not None:
-            queryset = queryset.filter(land_area_value__lte=land_area_max)
+            try: queryset = queryset.filter(land_area_sqft__lte=convert_area(land_area_max, land_area_unit))
+            except ValueError: raise ValidationError({"land_area_unit": "Unsupported area unit."})
         if road_access_min is not None:
             queryset = queryset.filter(road_access_value__gte=road_access_min)
         if min_lat is not None: queryset = queryset.filter(latitude__gte=min_lat)
@@ -236,6 +267,9 @@ class PublicPropertyListView(generics.ListAPIView):
                 | Q(district__icontains=search)
                 | Q(city__icontains=search)
                 | Q(neighbourhood__icontains=search)
+                | Q(municipality__icontains=search)
+                | Q(tole__icontains=search)
+                | Q(landmark__icontains=search)
                 | Q(address__icontains=search)
             )
 
@@ -296,6 +330,7 @@ class PublicPropertyFilterOptionsView(APIView):
             "district",
             "city",
             "neighbourhood",
+            "municipality", "ward_number", "tole",
         )
 
         location_values = []
@@ -328,6 +363,8 @@ class PublicPropertyFilterOptionsView(APIView):
             add_location(property_values["district"], "district")
             add_location(property_values["city"], "city")
             add_location(property_values["neighbourhood"], "neighbourhood")
+            add_location(property_values["municipality"], "municipality")
+            add_location(property_values["tole"], "tole")
 
         return Response(
             {
@@ -345,6 +382,10 @@ class PublicPropertyFilterOptionsView(APIView):
                     }
                     for value, label in Property.PURPOSES
                 ],
+                "land_use_classifications": [{"value": value, "label": label} for value, label in Property.LAND_USE_CHOICES],
+                "area_units": [{"value": value, "label": label} for value, label in Property.AREA_UNITS],
+                "road_types": [{"value": value, "label": label} for value, label in Property.ROAD_TYPE_CHOICES],
+                "plot_shapes": [{"value": value, "label": label} for value, label in Property.PLOT_SHAPE_CHOICES],
                 "locations": location_values,
             }
         )
