@@ -35,6 +35,7 @@ def get_or_create_public_lead(
     purpose="",
     property_type="",
     notes="",
+    property_obj=None,
 ):
     normalized_phone = normalize_phone(phone)
     normalized_email = (email or "").lower().strip()
@@ -82,6 +83,11 @@ def get_or_create_public_lead(
             changed_fields.append("updated_at")
             lead.save(update_fields=changed_fields)
 
+        if not lead.assigned_agent_id or not lead.assigned_at:
+            from .automation import apply_lead_automation
+            apply_lead_automation(lead, property_obj=property_obj)
+            lead.refresh_from_db()
+
         return lead, False
 
     lead = Lead.objects.create(
@@ -102,4 +108,7 @@ def get_or_create_public_lead(
         lead=lead,
         to_status=lead.status,
     )
+    from .automation import apply_lead_automation
+    apply_lead_automation(lead, property_obj=property_obj)
+    lead.refresh_from_db()
     return lead, True

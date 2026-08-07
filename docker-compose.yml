@@ -53,6 +53,7 @@ services:
     container_name: real_estate_scheduler
     command: >
       sh -c "while true; do
+      python manage.py process_lead_automation;
       python manage.py send_due_reminders --hours 24;
       python manage.py send_task_reminders;
       python manage.py send_saved_search_alerts;

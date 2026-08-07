@@ -75,6 +75,14 @@ Only `available` properties can remain published. Agents create drafts assigned 
 | GET/POST | `/api/leads/{id}/interactions/` | Calls, notes, meetings, and follow-ups |
 | POST | `/api/leads/{id}/complete-follow-up/` | Complete action and optionally schedule next one |
 | GET | `/api/leads/{id}/timeline/` | Interactions, stage history, and visits |
+| GET/PATCH | `/api/leads/automation/settings/` | Read or configure agency routing, capacity, SLA, reminder, and inactivity thresholds |
+| GET/POST | `/api/leads/automation/rules/` | Ordered property, location, property-type, listing-agent, specific-agent, and round-robin rules |
+| GET/PATCH/DELETE | `/api/leads/automation/rules/{id}/` | Manage an assignment rule |
+| GET | `/api/leads/automation/dashboard/` | Workload, overdue-response, duplicate, and per-agent response metrics |
+| GET | `/api/leads/automation/duplicates/` | Review detected duplicate leads; accepts a `status` filter |
+| PATCH | `/api/leads/automation/duplicates/{id}/` | Confirm or dismiss a duplicate flag |
+| GET | `/api/leads/automation/events/` | Recent routing, response, reminder, escalation, and reassignment events |
+| POST | `/api/leads/automation/process/` | Manager-triggered escalation and inactivity check |
 
 Use the `follow_up` list filter with `due_today`, `overdue`, `upcoming`, or `none`. Marking a lead `lost` requires `lost_reason`.
 

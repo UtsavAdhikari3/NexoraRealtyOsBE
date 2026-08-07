@@ -1,6 +1,10 @@
 from rest_framework import serializers
 
-from .models import Lead, LeadPropertyInterest, LeadInteraction, LeadStatusHistory
+from .models import (
+    Lead, LeadPropertyInterest, LeadInteraction, LeadStatusHistory,
+    LeadAutomationSettings, LeadAssignmentRule, LeadDuplicateFlag,
+    LeadAutomationEvent,
+)
 
 
 class LeadStatusHistorySerializer(serializers.ModelSerializer):
@@ -34,6 +38,7 @@ class LeadSerializer(serializers.ModelSerializer):
     site_visits_count = serializers.SerializerMethodField()
     offers_count = serializers.SerializerMethodField()
     documents_count = serializers.SerializerMethodField()
+    pending_duplicate_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
@@ -63,6 +68,17 @@ class LeadSerializer(serializers.ModelSerializer):
             "lost_reason",
             "follow_up_reminder_sent_at",
             "follow_up_reminder_error",
+            "assigned_at",
+            "response_due_at",
+            "first_responded_at",
+            "assignment_responded_at",
+            "response_time_seconds",
+            "last_agent_activity_at",
+            "escalated_at",
+            "neglect_alerted_at",
+            "reassigned_at",
+            "reassignment_count",
+            "pending_duplicate_count",
             "property_interests_count",
             "interactions_count",
             "interested_property",
@@ -91,6 +107,17 @@ class LeadSerializer(serializers.ModelSerializer):
             "follow_up_status",
             "follow_up_reminder_sent_at",
             "follow_up_reminder_error",
+            "assigned_at",
+            "response_due_at",
+            "first_responded_at",
+            "assignment_responded_at",
+            "response_time_seconds",
+            "last_agent_activity_at",
+            "escalated_at",
+            "neglect_alerted_at",
+            "reassigned_at",
+            "reassignment_count",
+            "pending_duplicate_count",
             "created_at",
             "updated_at",
         ]
@@ -146,6 +173,9 @@ class LeadSerializer(serializers.ModelSerializer):
         return obj.documents.count() + sum(
             deal.documents.count() for deal in obj.deals.all()
         )
+
+    def get_pending_duplicate_count(self, obj) -> int:
+        return obj.duplicate_flags.filter(status="pending").count()
 
     def validate_assigned_agent(self, value):
         if value is None:
@@ -339,3 +369,113 @@ class LeadInteractionSerializer(serializers.ModelSerializer):
             return obj.agent.full_name
 
         return None
+
+
+class LeadAutomationSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LeadAutomationSettings
+        fields = [
+            "is_enabled", "fallback_assignment", "max_active_leads_per_agent",
+            "response_sla_minutes", "escalation_minutes",
+            "inactive_reassign_hours", "manager_alert_hours",
+            "follow_up_reminder_hours", "auto_reassign_inactive",
+            "auto_detect_duplicates", "updated_at",
+        ]
+        read_only_fields = ["updated_at"]
+
+    def validate(self, attrs):
+        response_sla = attrs.get(
+            "response_sla_minutes",
+            getattr(self.instance, "response_sla_minutes", 30),
+        )
+        escalation = attrs.get(
+            "escalation_minutes",
+            getattr(self.instance, "escalation_minutes", 120),
+        )
+        if escalation < response_sla:
+            raise serializers.ValidationError({
+                "escalation_minutes": "Escalation must not be earlier than the response SLA."
+            })
+        return attrs
+
+
+class LeadAssignmentRuleSerializer(serializers.ModelSerializer):
+    assign_to_agent_name = serializers.CharField(
+        source="assign_to_agent.full_name", read_only=True
+    )
+    match_property_title = serializers.CharField(
+        source="match_property.title", read_only=True
+    )
+
+    class Meta:
+        model = LeadAssignmentRule
+        fields = [
+            "id", "name", "priority", "is_active", "match_property",
+            "match_property_title", "match_location", "match_property_type",
+            "assignment_method", "assign_to_agent", "assign_to_agent_name",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        method = attrs.get(
+            "assignment_method",
+            getattr(self.instance, "assignment_method", "round_robin"),
+        )
+        agent = attrs.get("assign_to_agent", getattr(self.instance, "assign_to_agent", None))
+        property_obj = attrs.get(
+            "match_property", getattr(self.instance, "match_property", None)
+        )
+        if method == "specific_agent" and not agent:
+            raise serializers.ValidationError({
+                "assign_to_agent": "Choose an agent for specific-agent assignment."
+            })
+        if method != "specific_agent":
+            attrs["assign_to_agent"] = None
+        if request and agent and (
+            agent.agency_id != request.user.agency_id
+            or agent.role != "agent"
+            or not agent.is_active
+        ):
+            raise serializers.ValidationError({
+                "assign_to_agent": "Choose an active agent from your agency."
+            })
+        if request and property_obj and property_obj.agency_id != request.user.agency_id:
+            raise serializers.ValidationError({
+                "match_property": "Choose a property from your agency."
+            })
+        return attrs
+
+
+class LeadDuplicateFlagSerializer(serializers.ModelSerializer):
+    lead_name = serializers.CharField(source="lead.full_name", read_only=True)
+    candidate_name = serializers.CharField(source="candidate.full_name", read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source="reviewed_by.full_name", read_only=True
+    )
+
+    class Meta:
+        model = LeadDuplicateFlag
+        fields = [
+            "id", "lead", "lead_name", "candidate", "candidate_name",
+            "score", "reasons", "status", "reviewed_by", "reviewed_by_name",
+            "reviewed_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "lead", "candidate", "score", "reasons", "reviewed_by",
+            "reviewed_at", "created_at", "updated_at",
+        ]
+
+
+class LeadAutomationEventSerializer(serializers.ModelSerializer):
+    from_agent_name = serializers.CharField(source="from_agent.full_name", read_only=True)
+    to_agent_name = serializers.CharField(source="to_agent.full_name", read_only=True)
+
+    class Meta:
+        model = LeadAutomationEvent
+        fields = [
+            "id", "lead", "event_type", "rule", "from_agent",
+            "from_agent_name", "to_agent", "to_agent_name", "summary",
+            "details", "created_at",
+        ]

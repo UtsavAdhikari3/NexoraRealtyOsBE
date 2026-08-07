@@ -328,7 +328,6 @@ class PublicSiteVisitRequestView(APIView):
 
         lead, lead_created = get_or_create_public_lead(
             agency=property_obj.agency,
-            assigned_agent=assigned_agent,
             full_name=data["full_name"],
             phone=data["phone"],
             email=data.get("email", ""),
@@ -336,7 +335,9 @@ class PublicSiteVisitRequestView(APIView):
             purpose=property_obj.purpose,
             property_type=property_obj.property_type,
             notes=data.get("message", ""),
+            property_obj=property_obj,
         )
+        assigned_agent = lead.assigned_agent
 
         lead_interest, _ = LeadPropertyInterest.objects.get_or_create(
             agency=property_obj.agency,

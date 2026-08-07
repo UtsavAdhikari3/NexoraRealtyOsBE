@@ -10,7 +10,7 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
 - Property CRUD, assignment, publication, filtering, and media
 - Public agency, agent, listing, inquiry, and site-visit APIs
 - Phone normalization and duplicate public-lead reuse
-- Lead pipeline, property interests, interaction history, and status audit trail
+- Unified lead pipeline with property interests, interaction history, status audit trail, configurable assignment rules, duplicate checks, response SLAs, escalation, and inactivity reassignment
 - Due/overdue follow-ups and idempotent reminders
 - Site-visit scheduling, outcomes, cancellations, and reminders
 - Property view/contact conversion events and dashboard summaries

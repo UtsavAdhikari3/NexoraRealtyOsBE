@@ -294,6 +294,8 @@ class ConversationCreateLeadView(APIView):
             to_status=lead.status,
             changed_by=request.user,
         )
+        from leads.automation import apply_lead_automation
+        apply_lead_automation(lead)
         conversation.linked_lead = lead
         conversation.contact.linked_lead = lead
         conversation.save(update_fields=["linked_lead", "updated_at"])

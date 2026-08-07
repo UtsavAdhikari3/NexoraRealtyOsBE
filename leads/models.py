@@ -126,6 +126,16 @@ class Lead(models.Model):
     lost_reason = models.CharField(max_length=255, blank=True)
     follow_up_reminder_sent_at = models.DateTimeField(null=True, blank=True)
     follow_up_reminder_error = models.TextField(blank=True)
+    assigned_at = models.DateTimeField(null=True, blank=True)
+    response_due_at = models.DateTimeField(null=True, blank=True)
+    first_responded_at = models.DateTimeField(null=True, blank=True)
+    assignment_responded_at = models.DateTimeField(null=True, blank=True)
+    response_time_seconds = models.PositiveIntegerField(null=True, blank=True)
+    last_agent_activity_at = models.DateTimeField(null=True, blank=True)
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    neglect_alerted_at = models.DateTimeField(null=True, blank=True)
+    reassigned_at = models.DateTimeField(null=True, blank=True)
+    reassignment_count = models.PositiveSmallIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -137,6 +147,8 @@ class Lead(models.Model):
             models.Index(fields=["agency", "assigned_agent", "status"]),
             models.Index(fields=["agency", "follow_up_status", "next_follow_up_at"]),
             models.Index(fields=["agency", "phone"]),
+            models.Index(fields=["agency", "response_due_at", "first_responded_at"]),
+            models.Index(fields=["agency", "assigned_agent", "last_agent_activity_at"]),
         ]
 
     def __str__(self):
@@ -270,6 +282,10 @@ class LeadInteraction(models.Model):
                 last_contacted_at=self.created_at,
                 updated_at=timezone.now(),
             )
+        if is_new and self.direction == "outbound" and self.agent_id:
+            from .automation import record_agent_response
+            lead = Lead.objects.select_related("assigned_agent").get(pk=self.lead_id)
+            record_agent_response(lead, self.agent, self.created_at)
 
 
 class LeadStatusHistory(models.Model):
@@ -300,3 +316,146 @@ class LeadStatusHistory(models.Model):
 
     def __str__(self):
         return f"{self.lead_id}: {self.from_status} -> {self.to_status}"
+
+
+class LeadAutomationSettings(models.Model):
+    FALLBACK_CHOICES = [
+        ("listing_agent", "Listing Agent"),
+        ("round_robin", "Round Robin"),
+        ("unassigned", "Leave Unassigned"),
+    ]
+
+    agency = models.OneToOneField(
+        Agency, on_delete=models.CASCADE, related_name="lead_automation_settings"
+    )
+    is_enabled = models.BooleanField(default=True)
+    fallback_assignment = models.CharField(
+        max_length=30, choices=FALLBACK_CHOICES, default="listing_agent"
+    )
+    max_active_leads_per_agent = models.PositiveIntegerField(default=50)
+    response_sla_minutes = models.PositiveIntegerField(default=30)
+    escalation_minutes = models.PositiveIntegerField(default=120)
+    inactive_reassign_hours = models.PositiveIntegerField(default=48)
+    manager_alert_hours = models.PositiveIntegerField(default=24)
+    follow_up_reminder_hours = models.PositiveIntegerField(default=24)
+    auto_reassign_inactive = models.BooleanField(default=True)
+    auto_detect_duplicates = models.BooleanField(default=True)
+    round_robin_last_agent = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="automation_round_robin_cursors",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class LeadAssignmentRule(models.Model):
+    METHOD_CHOICES = [
+        ("specific_agent", "Specific Agent"),
+        ("listing_agent", "Listing Agent"),
+        ("round_robin", "Round Robin"),
+    ]
+
+    agency = models.ForeignKey(
+        Agency, on_delete=models.CASCADE, related_name="lead_assignment_rules"
+    )
+    name = models.CharField(max_length=120)
+    priority = models.PositiveIntegerField(default=100)
+    is_active = models.BooleanField(default=True)
+    match_property = models.ForeignKey(
+        Property, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="lead_assignment_rules",
+    )
+    match_location = models.CharField(max_length=255, blank=True)
+    match_property_type = models.CharField(
+        max_length=30, choices=Property.PROPERTY_TYPES, blank=True
+    )
+    assignment_method = models.CharField(
+        max_length=30, choices=METHOD_CHOICES, default="round_robin"
+    )
+    assign_to_agent = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="lead_assignment_rules",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["priority", "id"]
+        indexes = [models.Index(fields=["agency", "is_active", "priority"])]
+
+
+class LeadDuplicateFlag(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Needs Review"),
+        ("confirmed", "Confirmed Duplicate"),
+        ("dismissed", "Not a Duplicate"),
+    ]
+    agency = models.ForeignKey(
+        Agency, on_delete=models.CASCADE, related_name="lead_duplicate_flags"
+    )
+    lead = models.ForeignKey(
+        Lead, on_delete=models.CASCADE, related_name="duplicate_flags"
+    )
+    candidate = models.ForeignKey(
+        Lead, on_delete=models.CASCADE, related_name="duplicate_candidates"
+    )
+    score = models.PositiveSmallIntegerField(default=0)
+    reasons = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_lead_duplicates",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-score", "-created_at"]
+        constraints = [models.UniqueConstraint(
+            fields=["lead", "candidate"], name="unique_lead_duplicate_pair"
+        )]
+
+
+class LeadAutomationEvent(models.Model):
+    EVENT_CHOICES = [
+        ("assigned", "Assigned"), ("response", "First Response"),
+        ("duplicate", "Duplicate Flagged"), ("escalated", "Escalated"),
+        ("neglect_alert", "Neglect Alert"), ("reassigned", "Reassigned"),
+        ("follow_up_reminder", "Follow-up Reminder"),
+    ]
+    agency = models.ForeignKey(
+        Agency, on_delete=models.CASCADE, related_name="lead_automation_events"
+    )
+    lead = models.ForeignKey(
+        Lead, on_delete=models.CASCADE, related_name="automation_events"
+    )
+    event_type = models.CharField(max_length=30, choices=EVENT_CHOICES)
+    rule = models.ForeignKey(
+        LeadAssignmentRule, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="events",
+    )
+    from_agent = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="lead_automation_events_from",
+    )
+    to_agent = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="lead_automation_events_to",
+    )
+    summary = models.CharField(max_length=255)
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["agency", "event_type", "created_at"])]

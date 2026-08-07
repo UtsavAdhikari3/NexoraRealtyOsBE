@@ -1,6 +1,9 @@
 from django.contrib import admin
 
-from .models import Lead, LeadPropertyInterest, LeadInteraction
+from .models import (
+    Lead, LeadPropertyInterest, LeadInteraction, LeadAutomationSettings,
+    LeadAssignmentRule, LeadDuplicateFlag, LeadAutomationEvent,
+)
 
 
 @admin.register(Lead)
@@ -77,3 +80,26 @@ class LeadInteractionAdmin(admin.ModelAdmin):
         "lead__phone",
         "note",
     )
+
+
+@admin.register(LeadAutomationSettings)
+class LeadAutomationSettingsAdmin(admin.ModelAdmin):
+    list_display = ("agency", "is_enabled", "fallback_assignment", "updated_at")
+
+
+@admin.register(LeadAssignmentRule)
+class LeadAssignmentRuleAdmin(admin.ModelAdmin):
+    list_display = ("name", "agency", "priority", "assignment_method", "is_active")
+    list_filter = ("assignment_method", "is_active")
+
+
+@admin.register(LeadDuplicateFlag)
+class LeadDuplicateFlagAdmin(admin.ModelAdmin):
+    list_display = ("lead", "candidate", "score", "status", "created_at")
+    list_filter = ("status",)
+
+
+@admin.register(LeadAutomationEvent)
+class LeadAutomationEventAdmin(admin.ModelAdmin):
+    list_display = ("lead", "event_type", "from_agent", "to_agent", "created_at")
+    list_filter = ("event_type",)

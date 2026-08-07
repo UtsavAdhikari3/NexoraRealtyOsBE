@@ -420,7 +420,6 @@ class PublicPropertyInquiryView(APIView):
 
         lead, lead_created = get_or_create_public_lead(
             agency=property_obj.agency,
-            assigned_agent=property_obj.assigned_agent,
             full_name=data["full_name"],
             phone=data["phone"],
             email=data.get("email", ""),
@@ -428,6 +427,7 @@ class PublicPropertyInquiryView(APIView):
             purpose=property_obj.purpose,
             property_type=property_obj.property_type,
             notes=data.get("message", ""),
+            property_obj=property_obj,
         )
 
         lead_interest, _ = LeadPropertyInterest.objects.get_or_create(
@@ -443,7 +443,7 @@ class PublicPropertyInquiryView(APIView):
         lead_interaction = LeadInteraction.objects.create(
             agency=property_obj.agency,
             lead=lead,
-            agent=property_obj.assigned_agent,
+            agent=lead.assigned_agent,
             interaction_type="note",
             direction="inbound",
             note=data.get("message", "Public property inquiry submitted."),

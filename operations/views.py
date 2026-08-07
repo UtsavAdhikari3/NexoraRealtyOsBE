@@ -657,7 +657,7 @@ def public_submission_create(request, slug):
             lead_notes = f"{message}\n\nWebsite submission details: {json.dumps(metadata, ensure_ascii=False)}".strip()
         lead, _ = get_or_create_public_lead(
             agency=agency,
-            assigned_agent=agent,
+            assigned_agent=data.get("agent"),
             full_name=data.get("full_name") or data.get("email") or "Website visitor",
             phone=data["phone"],
             email=data.get("email", ""),
@@ -665,7 +665,9 @@ def public_submission_create(request, slug):
             purpose=metadata.get("purpose", ""),
             property_type=metadata.get("property_type", ""),
             notes=lead_notes,
+            property_obj=property_obj,
         )
+        agent = lead.assigned_agent or agent
         custom_data = dict(lead.custom_data or {})
         custom_data.update({"public_submission_kind": data["kind"], **metadata})
         lead.custom_data = custom_data
