@@ -2,7 +2,7 @@ import re
 
 from django.db.models import Q
 
-from .models import Lead
+from .models import Lead, LeadStatusHistory
 
 
 def normalize_phone(value):
@@ -84,7 +84,7 @@ def get_or_create_public_lead(
 
         return lead, False
 
-    return Lead.objects.create(
+    lead = Lead.objects.create(
         agency=agency,
         assigned_agent=assigned_agent,
         full_name=full_name.strip(),
@@ -96,4 +96,10 @@ def get_or_create_public_lead(
         purpose=purpose,
         property_type=property_type,
         notes=notes,
-    ), True
+    )
+    LeadStatusHistory.objects.create(
+        agency=agency,
+        lead=lead,
+        to_status=lead.status,
+    )
+    return lead, True

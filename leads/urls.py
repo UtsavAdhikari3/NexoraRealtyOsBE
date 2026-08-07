@@ -9,6 +9,8 @@ from .views import (
     LeadInteractionDetailView,
     LeadFollowUpCompleteView,
     LeadTimelineView,
+    LeadWorkspaceView,
+    LeadDocumentListCreateView,
 )
 
 
@@ -57,5 +59,15 @@ urlpatterns = [
         "<int:lead_id>/timeline/",
         LeadTimelineView.as_view(),
         name="lead-timeline",
+    ),
+    path(
+        "<int:lead_id>/workspace/",
+        LeadWorkspaceView.as_view(),
+        name="lead-workspace",
+    ),
+    path(
+        "<int:lead_id>/documents/",
+        LeadDocumentListCreateView.as_view(),
+        name="lead-document-list",
     ),
 ]

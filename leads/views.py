@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 
@@ -111,9 +111,14 @@ class LeadListCreateView(generics.ListCreateAPIView):
             "agency",
             "assigned_agent",
         ).prefetch_related(
-            "property_interests",
+            "property_interests__property",
             "interactions",
-        ).order_by("-created_at")
+            "inbox_conversations",
+            "site_visits",
+            "deals__offers",
+            "deals__documents",
+            "documents",
+        ).order_by(F("last_contacted_at").desc(nulls_last=True), "-created_at")
 
         status_value = self.request.query_params.get("status")
         source = self.request.query_params.get("source")
@@ -216,8 +221,13 @@ class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
             "agency",
             "assigned_agent",
         ).prefetch_related(
-            "property_interests",
+            "property_interests__property",
             "interactions",
+            "inbox_conversations",
+            "site_visits",
+            "deals__offers",
+            "deals__documents",
+            "documents",
         )
 
     def perform_update(self, serializer):
@@ -338,8 +348,10 @@ class LeadInteractionListCreateView(generics.ListCreateAPIView):
             lead=lead,
             agent=self.request.user
         )
-        lead.last_contacted_at = timezone.now()
-        update_fields = ["last_contacted_at", "updated_at"]
+        update_fields = []
+        if interaction.direction != "internal":
+            lead.last_contacted_at = timezone.now()
+            update_fields.append("last_contacted_at")
         if interaction.follow_up_date:
             lead.next_follow_up_at = interaction.follow_up_date
             lead.follow_up_status = Lead.FOLLOW_UP_PENDING
@@ -349,7 +361,9 @@ class LeadInteractionListCreateView(generics.ListCreateAPIView):
             update_fields.extend(
                 ["follow_up_reminder_sent_at", "follow_up_reminder_error"]
             )
-        lead.save(update_fields=update_fields)
+        if update_fields:
+            update_fields.append("updated_at")
+            lead.save(update_fields=update_fields)
 
 
 class LeadInteractionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -386,6 +400,7 @@ class LeadFollowUpCompleteView(APIView):
         interaction_serializer = LeadInteractionSerializer(
             data={
                 "interaction_type": request.data.get("interaction_type", "note"),
+                "direction": request.data.get("direction", "outbound"),
                 "note": note,
                 "follow_up_date": next_follow_up_at,
             },
@@ -442,4 +457,94 @@ class LeadTimelineView(APIView):
                 "status_history": LeadStatusHistorySerializer(history, many=True).data,
                 "site_visits": SiteVisitSerializer(site_visits, many=True).data,
             }
+        )
+
+
+class LeadWorkspaceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, lead_id):
+        from crm_inbox.models import SocialMessage
+        from crm_inbox.serializers import ConversationSerializer, SocialMessageSerializer
+        from operations.models import Deal, Document, Offer
+        from operations.serializers import DealSerializer, DocumentSerializer, OfferSerializer
+
+        lead = get_object_or_404(
+            get_accessible_leads_for_user(request.user).select_related(
+                "assigned_agent", "contact"
+            ).prefetch_related(
+                "property_interests__property", "interactions__agent",
+                "status_history__changed_by", "site_visits__property",
+                "inbox_conversations__contact", "deals__offers", "documents",
+            ),
+            id=lead_id,
+        )
+        deals = Deal.objects.filter(agency=lead.agency, lead=lead).select_related(
+            "property", "assigned_agent", "contact"
+        ).prefetch_related("offers")
+        offers = Offer.objects.filter(agency=lead.agency, deal__lead=lead).select_related(
+            "deal", "submitted_by"
+        )
+        documents = Document.objects.filter(agency=lead.agency).filter(
+            Q(lead=lead) | Q(deal__lead=lead) | Q(contact__lead=lead)
+        ).select_related("lead", "deal", "contact", "property", "uploaded_by").distinct()
+        conversations = lead.inbox_conversations.select_related(
+            "social_account", "contact", "assigned_agent", "linked_lead"
+        ).all()
+        social_messages = SocialMessage.objects.filter(
+            conversation__linked_lead=lead
+        ).select_related("conversation").order_by("-sent_at")
+
+        return Response({
+            "lead": LeadSerializer(lead, context={"request": request}).data,
+            "property_interests": LeadPropertyInterestSerializer(
+                lead.property_interests.all(), many=True, context={"request": request}
+            ).data,
+            "interactions": LeadInteractionSerializer(
+                lead.interactions.all(), many=True, context={"request": request}
+            ).data,
+            "status_history": LeadStatusHistorySerializer(
+                lead.status_history.all(), many=True
+            ).data,
+            "site_visits": SiteVisitSerializer(lead.site_visits.all(), many=True).data,
+            "deals": DealSerializer(deals, many=True, context={"request": request}).data,
+            "offers": OfferSerializer(offers, many=True, context={"request": request}).data,
+            "documents": DocumentSerializer(documents, many=True, context={"request": request}).data,
+            "conversations": ConversationSerializer(conversations, many=True).data,
+            "social_messages": [
+                {
+                    **SocialMessageSerializer(message).data,
+                    "conversation_id": message.conversation_id,
+                    "platform": message.conversation.platform,
+                }
+                for message in social_messages
+            ],
+        })
+
+
+class LeadDocumentListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        from operations.serializers import DocumentSerializer
+        return DocumentSerializer
+
+    def get_lead(self):
+        return get_object_or_404(
+            get_accessible_leads_for_user(self.request.user),
+            id=self.kwargs["lead_id"],
+        )
+
+    def get_queryset(self):
+        from operations.models import Document
+        return Document.objects.filter(
+            agency=self.request.user.agency,
+            lead=self.get_lead(),
+        ).select_related("lead", "uploaded_by", "property", "deal", "contact", "owner")
+
+    def perform_create(self, serializer):
+        serializer.save(
+            agency=self.request.user.agency,
+            lead=self.get_lead(),
+            uploaded_by=self.request.user,
         )

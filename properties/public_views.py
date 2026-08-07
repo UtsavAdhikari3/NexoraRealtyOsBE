@@ -445,6 +445,7 @@ class PublicPropertyInquiryView(APIView):
             lead=lead,
             agent=property_obj.assigned_agent,
             interaction_type="note",
+            direction="inbound",
             note=data.get("message", "Public property inquiry submitted."),
         )
         PropertyEvent.objects.create(

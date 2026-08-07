@@ -364,6 +364,7 @@ class PublicSiteVisitRequestView(APIView):
             lead=lead,
             agent=assigned_agent,
             interaction_type="site_visit",
+            direction="inbound",
             note=(
                 "Public website visitor requested a site visit. "
                 f"Preferred datetime: {data['preferred_datetime']}. "

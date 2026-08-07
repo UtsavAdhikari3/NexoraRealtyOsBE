@@ -132,6 +132,7 @@ class PublicAgencyContactView(APIView):
             agency=agency,
             lead=lead,
             interaction_type="note",
+            direction="inbound",
             note=data.get("message") or "Public agency contact form submitted.",
         )
 

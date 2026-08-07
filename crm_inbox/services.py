@@ -185,9 +185,13 @@ def ingest_messaging_event(account, event):
             LeadInteraction.objects.create(
                 agency=conversation.agency,
                 lead=conversation.linked_lead,
-                interaction_type="note",
+                interaction_type=account.platform,
+                direction="inbound",
                 note=f"Inbound {account.platform} message: {preview}",
             )
+            lead = conversation.linked_lead
+            lead.last_contacted_at = sent_at
+            lead.save(update_fields=["last_contacted_at", "updated_at"])
     else:
         Conversation.objects.filter(id=conversation.id).update(**update_values)
 

@@ -24,9 +24,16 @@ class LeadStatusHistorySerializer(serializers.ModelSerializer):
 
 class LeadSerializer(serializers.ModelSerializer):
     status = serializers.CharField(max_length=40, required=False)
+    source_display = serializers.CharField(source="get_source_display", read_only=True)
+    status_display = serializers.SerializerMethodField()
     assigned_agent_name = serializers.SerializerMethodField()
     property_interests_count = serializers.SerializerMethodField()
     interactions_count = serializers.SerializerMethodField()
+    interested_property = serializers.SerializerMethodField()
+    unread_messages_count = serializers.SerializerMethodField()
+    site_visits_count = serializers.SerializerMethodField()
+    offers_count = serializers.SerializerMethodField()
+    documents_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
@@ -40,7 +47,9 @@ class LeadSerializer(serializers.ModelSerializer):
             "phone",
             "email",
             "source",
+            "source_display",
             "status",
+            "status_display",
             "budget_min",
             "budget_max",
             "preferred_location",
@@ -56,6 +65,11 @@ class LeadSerializer(serializers.ModelSerializer):
             "follow_up_reminder_error",
             "property_interests_count",
             "interactions_count",
+            "interested_property",
+            "unread_messages_count",
+            "site_visits_count",
+            "offers_count",
+            "documents_count",
             "created_at",
             "updated_at",
         ]
@@ -65,8 +79,15 @@ class LeadSerializer(serializers.ModelSerializer):
             "agency",
             "created_by",
             "assigned_agent_name",
+            "source_display",
+            "status_display",
             "property_interests_count",
             "interactions_count",
+            "interested_property",
+            "unread_messages_count",
+            "site_visits_count",
+            "offers_count",
+            "documents_count",
             "follow_up_status",
             "follow_up_reminder_sent_at",
             "follow_up_reminder_error",
@@ -80,11 +101,51 @@ class LeadSerializer(serializers.ModelSerializer):
 
         return None
 
+    def get_status_display(self, obj) -> str:
+        return dict(Lead.STATUS_CHOICES).get(
+            obj.status,
+            obj.status.replace("_", " ").title(),
+        )
+
     def get_property_interests_count(self, obj) -> int:
         return obj.property_interests.count()
 
     def get_interactions_count(self, obj) -> int:
         return obj.interactions.count()
+
+    def get_interested_property(self, obj) -> dict | None:
+        interest = next(iter(obj.property_interests.all()), None)
+        if not interest:
+            return None
+        property_obj = interest.property
+        return {
+            "id": property_obj.id,
+            "display_property_id": f"LP-{property_obj.id:03d}",
+            "title": property_obj.title,
+            "status": property_obj.status,
+            "price": str(property_obj.price),
+            "location": ", ".join(
+                filter(None, [property_obj.tole, property_obj.city, property_obj.district])
+            ),
+            "interest_level": interest.interest_level,
+        }
+
+    def get_unread_messages_count(self, obj) -> int:
+        return sum(
+            conversation.unread_count
+            for conversation in obj.inbox_conversations.all()
+        )
+
+    def get_site_visits_count(self, obj) -> int:
+        return obj.site_visits.count()
+
+    def get_offers_count(self, obj) -> int:
+        return sum(deal.offers.count() for deal in obj.deals.all())
+
+    def get_documents_count(self, obj) -> int:
+        return obj.documents.count() + sum(
+            deal.documents.count() for deal in obj.deals.all()
+        )
 
     def validate_assigned_agent(self, value):
         if value is None:
@@ -259,6 +320,7 @@ class LeadInteractionSerializer(serializers.ModelSerializer):
             "agent",
             "agent_name",
             "interaction_type",
+            "direction",
             "note",
             "follow_up_date",
             "created_at",

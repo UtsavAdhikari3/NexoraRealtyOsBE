@@ -10,7 +10,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from leads.models import Lead, LeadInteraction
+from leads.models import Lead, LeadInteraction, LeadStatusHistory
 from social_media.services.meta import MetaAPIError, send_meta_text_message
 from users.models import AgencyUser
 
@@ -196,6 +196,18 @@ class ConversationReplyView(APIView):
                 "updated_at",
             ]
         )
+        if conversation.linked_lead_id:
+            LeadInteraction.objects.create(
+                agency=conversation.agency,
+                lead=conversation.linked_lead,
+                agent=request.user,
+                interaction_type=conversation.platform,
+                direction="outbound",
+                note=text,
+            )
+            lead = conversation.linked_lead
+            lead.last_contacted_at = message.sent_at
+            lead.save(update_fields=["last_contacted_at", "updated_at"])
         response_status = (
             status.HTTP_201_CREATED
             if message.delivery_status == SocialMessage.STATUS_SENT
@@ -246,6 +258,11 @@ class ConversationLinkLeadView(APIView):
         conversation.contact.linked_lead = lead
         conversation.save(update_fields=["linked_lead", "updated_at"])
         conversation.contact.save(update_fields=["linked_lead"])
+        if conversation.last_message_at and (
+            not lead.last_contacted_at or conversation.last_message_at > lead.last_contacted_at
+        ):
+            lead.last_contacted_at = conversation.last_message_at
+            lead.save(update_fields=["last_contacted_at", "updated_at"])
         return Response(ConversationSerializer(conversation).data)
 
 
@@ -268,7 +285,14 @@ class ConversationCreateLeadView(APIView):
             created_by=request.user,
             source=conversation.platform,
             status="new",
+            last_contacted_at=conversation.last_message_at,
             **serializer.validated_data,
+        )
+        LeadStatusHistory.objects.create(
+            agency=conversation.agency,
+            lead=lead,
+            to_status=lead.status,
+            changed_by=request.user,
         )
         conversation.linked_lead = lead
         conversation.contact.linked_lead = lead
@@ -279,6 +303,7 @@ class ConversationCreateLeadView(APIView):
             lead=lead,
             agent=request.user,
             interaction_type="note",
+            direction="internal",
             note=f"Lead created from {conversation.platform} conversation.",
         )
         return Response(ConversationSerializer(conversation).data, status=201)

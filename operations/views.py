@@ -260,12 +260,12 @@ class OfferViewSet(AgencyModelViewSet):
 
 
 class DocumentViewSet(AgencyModelViewSet):
-    queryset = Document.objects.select_related("uploaded_by", "property", "deal", "contact", "owner")
+    queryset = Document.objects.select_related("uploaded_by", "lead", "property", "deal", "contact", "owner")
     serializer_class = DocumentSerializer
     search_fields = ("title", "description")
 
     def restrict_agent_queryset(self, queryset, user):
-        return queryset.filter(Q(uploaded_by=user) | Q(deal__assigned_agent=user) | Q(property__assigned_agent=user)).distinct()
+        return queryset.filter(Q(uploaded_by=user) | Q(lead__assigned_agent=user) | Q(deal__assigned_agent=user) | Q(property__assigned_agent=user)).distinct()
 
     def perform_create(self, serializer):
         instance = serializer.save(agency=self.request.user.agency, uploaded_by=self.request.user)
@@ -675,6 +675,7 @@ def public_submission_create(request, slug):
             lead=lead,
             agent=agent,
             interaction_type="note",
+            direction="inbound",
             note=message or f"Public {data['kind'].replace('_', ' ')} submission received.",
         )
 
@@ -705,7 +706,7 @@ def public_submission_create(request, slug):
             title=("Listing reported by a visitor" if submission.kind == "listing_report" else f"New {submission.get_kind_display().lower()} submission"),
             message=submission.full_name or submission.email or "Website visitor",
             category="website_submission",
-            link=f"/website-submissions?submission={submission.id}",
+            link=(f"/inbox?lead={lead.id}" if lead else f"/website-submissions?submission={submission.id}"),
         )
         for user in recipients
     ])

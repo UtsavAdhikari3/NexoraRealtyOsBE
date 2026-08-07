@@ -138,6 +138,7 @@ class Document(AgencyScopedModel):
     category = models.CharField(max_length=30, choices=CATEGORY_CHOICES, default="other")
     file = models.FileField(upload_to="documents/")
     description = models.TextField(blank=True)
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     property = models.ForeignKey(Property, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     deal = models.ForeignKey(Deal, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")
     contact = models.ForeignKey(Contact, on_delete=models.CASCADE, null=True, blank=True, related_name="documents")

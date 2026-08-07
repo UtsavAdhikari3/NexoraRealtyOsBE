@@ -107,8 +107,9 @@ class OfferSerializer(AgencyValidationMixin, serializers.ModelSerializer):
 
 class DocumentSerializer(AgencyValidationMixin, serializers.ModelSerializer):
     uploaded_by_name = serializers.CharField(source="uploaded_by.full_name", read_only=True)
+    lead_name = serializers.CharField(source="lead.full_name", read_only=True)
     file_url = serializers.SerializerMethodField()
-    relation_fields = ("property", "deal", "contact", "owner")
+    relation_fields = ("lead", "property", "deal", "contact", "owner")
 
     class Meta:
         model = Document

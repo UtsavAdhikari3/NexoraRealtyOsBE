@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from agencies.models import Agency
 from properties.models import Property
@@ -12,9 +13,12 @@ class Lead(models.Model):
         ("instagram", "Instagram"),
         ("tiktok", "TikTok"),
         ("whatsapp", "WhatsApp"),
+        ("viber", "Viber"),
+        ("phone", "Phone Inquiry"),
         ("manual", "Manual"),
         ("referral", "Referral"),
         ("walk_in", "Walk In"),
+        ("property_portal", "Property Portal"),
     ]
 
     STATUS_CHOICES = [
@@ -192,10 +196,23 @@ class LeadInteraction(models.Model):
     INTERACTION_TYPE_CHOICES = [
         ("call", "Call"),
         ("whatsapp", "WhatsApp"),
+        ("viber", "Viber"),
+        ("facebook", "Facebook"),
+        ("instagram", "Instagram"),
         ("email", "Email"),
+        ("sms", "SMS"),
         ("meeting", "Meeting"),
+        ("walk_in", "Walk In"),
+        ("property_portal", "Property Portal"),
         ("site_visit", "Site Visit"),
         ("note", "Note"),
+        ("other", "Other"),
+    ]
+
+    DIRECTION_CHOICES = [
+        ("inbound", "Inbound"),
+        ("outbound", "Outbound"),
+        ("internal", "Internal Note"),
     ]
 
     agency = models.ForeignKey(
@@ -224,6 +241,12 @@ class LeadInteraction(models.Model):
         default="note"
     )
 
+    direction = models.CharField(
+        max_length=20,
+        choices=DIRECTION_CHOICES,
+        default="internal",
+    )
+
     note = models.TextField()
 
     follow_up_date = models.DateTimeField(
@@ -238,6 +261,15 @@ class LeadInteraction(models.Model):
 
     def __str__(self):
         return f"{self.lead.full_name} - {self.interaction_type}"
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        super().save(*args, **kwargs)
+        if is_new and self.direction != "internal":
+            Lead.objects.filter(pk=self.lead_id).update(
+                last_contacted_at=self.created_at,
+                updated_at=timezone.now(),
+            )
 
 
 class LeadStatusHistory(models.Model):
