@@ -317,7 +317,7 @@ class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSeriali
         metadata = attrs.get("metadata") or {}
 
         errors = {}
-        if kind != "newsletter" and not full_name:
+        if kind not in {"newsletter", "listing_report"} and not full_name:
             errors["full_name"] = "Full name is required."
         if kind in {"newsletter", "buyer_guide", "career"} and not email:
             errors["email"] = "Email is required for this submission type."
@@ -331,6 +331,11 @@ class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSeriali
             isinstance(metadata, dict) and metadata.get("property_title")
         ):
             errors["property"] = "Choose a property."
+        if kind == "listing_report":
+            if not attrs.get("property"):
+                errors["property"] = "Choose the listing being reported."
+            if not isinstance(metadata, dict) or not metadata.get("reason"):
+                errors["metadata"] = "Choose a reason for reporting this listing."
         if errors:
             raise serializers.ValidationError(errors)
         return attrs

@@ -685,6 +685,13 @@ def public_submission_create(request, slug):
         ip_address=client_ip(request),
         user_agent=request.headers.get("User-Agent", "")[:500],
     )
+    if submission.kind == "listing_report" and submission.property:
+        from properties.freshness import record_property_history
+        record_property_history(
+            submission.property, "report_received", "Public listing report received",
+            changes={"submission_id": submission.id, "reason": submission.metadata.get("reason", "")},
+            note=submission.message,
+        )
 
     recipients = AgencyUser.objects.filter(agency=agency, is_active=True)
     if agent:
@@ -695,7 +702,7 @@ def public_submission_create(request, slug):
         Notification(
             agency=agency,
             user=user,
-            title=f"New {submission.get_kind_display().lower()} submission",
+            title=("Listing reported by a visitor" if submission.kind == "listing_report" else f"New {submission.get_kind_display().lower()} submission"),
             message=submission.full_name or submission.email or "Website visitor",
             category="website_submission",
             link=f"/website-submissions?submission={submission.id}",

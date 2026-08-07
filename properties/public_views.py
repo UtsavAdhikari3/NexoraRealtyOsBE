@@ -106,7 +106,10 @@ def get_public_properties_queryset(license_number):
         agency__payment_status="paid",
         agency__is_active=True,
         is_published=True,
-        status="available",
+        status__in=["available", "reserved", "under_negotiation"],
+    ).filter(
+        availability_verified_at__isnull=False,
+        listing_expires_at__gt=timezone.now(),
     ).filter(
         Q(agency__subscription_expires_at__isnull=True)
         | Q(agency__subscription_expires_at__gt=timezone.now())
@@ -311,7 +314,10 @@ class PublicPropertyShareDetailView(generics.RetrieveAPIView):
             agency__payment_status="paid",
             agency__is_active=True,
             is_published=True,
-            status="available",
+            status__in=["available", "reserved", "under_negotiation"],
+        ).filter(
+            availability_verified_at__isnull=False,
+            listing_expires_at__gt=timezone.now(),
         ).select_related("agency", "assigned_agent", "verification").prefetch_related("media", "verification__documents")
 
 

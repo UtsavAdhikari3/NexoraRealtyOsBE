@@ -26,9 +26,11 @@ class Property(models.Model):
     STATUS_CHOICES = [
         ("draft", "Draft"),
         ("available", "Available"),
+        ("reserved", "Reserved"),
         ("under_negotiation", "Under Negotiation"),
         ("sold", "Sold"),
         ("rented", "Rented"),
+        ("withdrawn", "Withdrawn"),
         ("hidden", "Hidden"),
         ("archived", "Archived"),
     ]
@@ -297,6 +299,31 @@ class Property(models.Model):
     is_published = models.BooleanField(default=False)
     is_featured = models.BooleanField(default=False)
 
+    availability_verified_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    listing_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    owner_confirmed_at = models.DateTimeField(null=True, blank=True)
+    withdrawal_reason = models.TextField(blank=True)
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    requires_republish_approval = models.BooleanField(default=False)
+    REPUBLISH_APPROVAL_CHOICES = [
+        ("not_required", "Not Required"), ("pending", "Pending"),
+        ("approved", "Approved"), ("rejected", "Rejected"),
+    ]
+    republish_approval_status = models.CharField(
+        max_length=20, choices=REPUBLISH_APPROVAL_CHOICES, default="not_required"
+    )
+    republish_requested_at = models.DateTimeField(null=True, blank=True)
+    republish_requested_by = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="requested_property_republishes",
+    )
+    republish_approved_at = models.DateTimeField(null=True, blank=True)
+    republish_approved_by = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="approved_property_republishes",
+    )
+    republish_rejection_reason = models.TextField(blank=True)
+
     published_at = models.DateTimeField(
         null=True,
         blank=True
@@ -335,9 +362,32 @@ class Property(models.Model):
         changed_fields = set(kwargs.get("update_fields") or [])
         changed_fields.add("land_area_sqft")
 
-        if self.status != "available":
+        publishable_statuses = {"available", "reserved", "under_negotiation"}
+        if self.status not in publishable_statuses:
             self.is_published = False
             changed_fields.add("is_published")
+
+        if self.status == "withdrawn" and self.withdrawn_at is None:
+            self.withdrawn_at = timezone.now()
+            changed_fields.add("withdrawn_at")
+        elif self.status != "withdrawn" and self.withdrawn_at is not None:
+            self.withdrawn_at = None
+            changed_fields.add("withdrawn_at")
+
+        if self.listing_expires_at and self.listing_expires_at <= timezone.now():
+            self.is_published = False
+            self.requires_republish_approval = True
+            changed_fields.update({"is_published", "requires_republish_approval"})
+
+        if self.requires_republish_approval:
+            self.is_published = False
+            changed_fields.add("is_published")
+
+        if self.is_published and self.availability_verified_at is None:
+            from datetime import timedelta
+            self.availability_verified_at = timezone.now()
+            self.listing_expires_at = self.availability_verified_at + timedelta(days=30)
+            changed_fields.update({"availability_verified_at", "listing_expires_at"})
 
         if self.is_published and self.published_at is None:
             self.published_at = timezone.now()
@@ -507,6 +557,77 @@ class PropertyVerificationDocument(models.Model):
 
     def __str__(self):
         return f"{self.verification.property.title} - {self.get_document_type_display()}"
+
+
+class PropertyHistory(models.Model):
+    EVENT_TYPES = [
+        ("created", "Created"), ("updated", "Updated"),
+        ("status_changed", "Status Changed"), ("freshness_confirmed", "Freshness Confirmed"),
+        ("expired", "Listing Expired"), ("republish_requested", "Republish Requested"),
+        ("republish_approved", "Republish Approved"), ("republish_rejected", "Republish Rejected"),
+        ("withdrawn", "Withdrawn"), ("duplicate_flagged", "Duplicate Flagged"),
+        ("report_received", "Public Report Received"),
+    ]
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_history")
+    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="history")
+    actor = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="property_history_events",
+    )
+    event_type = models.CharField(max_length=40, choices=EVENT_TYPES)
+    summary = models.CharField(max_length=255)
+    changes = models.JSONField(default=dict, blank=True)
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["property", "created_at"])]
+
+
+class PropertyDuplicateFlag(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Needs Review"), ("confirmed", "Confirmed Duplicate"),
+        ("dismissed", "Not a Duplicate"),
+    ]
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_duplicate_flags")
+    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="duplicate_flags")
+    candidate = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="duplicate_candidates")
+    score = models.PositiveSmallIntegerField(default=0)
+    reasons = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    reviewed_by = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_property_duplicates",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-score", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["property", "candidate"], name="unique_property_duplicate_pair")
+        ]
+
+
+class PropertyListingReminder(models.Model):
+    REMINDER_TYPES = [
+        ("seven_days", "7 Days Before Expiry"), ("three_days", "3 Days Before Expiry"),
+        ("one_day", "1 Day Before Expiry"), ("expired", "Expired"),
+    ]
+    property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="freshness_reminders")
+    expiry_at = models.DateTimeField()
+    reminder_type = models.CharField(max_length=20, choices=REMINDER_TYPES)
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["property", "expiry_at", "reminder_type"],
+                name="unique_property_expiry_reminder",
+            )
+        ]
 
 
 class PropertyEvent(models.Model):

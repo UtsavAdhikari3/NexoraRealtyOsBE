@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
+from datetime import timedelta
 
 from leads.services import normalize_phone
 
@@ -45,6 +47,8 @@ class PublicPropertySerializer(serializers.ModelSerializer):
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
     verification_summary = serializers.SerializerMethodField()
+    availability_status_display = serializers.CharField(source="get_status_display", read_only=True)
+    freshness_state = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
@@ -104,6 +108,8 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "share_slug",
 
             "is_featured",
+            "status", "availability_status_display", "availability_verified_at",
+            "listing_expires_at", "owner_confirmed_at", "freshness_state",
             "published_at",
 
             "agency_name",
@@ -214,6 +220,15 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             ),
             "total_documents": 10,
         }
+
+    def get_freshness_state(self, obj):
+        if not obj.availability_verified_at or not obj.listing_expires_at:
+            return "unconfirmed"
+        if obj.listing_expires_at <= timezone.now():
+            return "expired"
+        if obj.listing_expires_at <= timezone.now() + timedelta(days=7):
+            return "expiring_soon"
+        return "fresh"
 
 
 class PublicPropertyInquirySerializer(serializers.Serializer):

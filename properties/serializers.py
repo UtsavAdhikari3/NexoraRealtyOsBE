@@ -1,9 +1,13 @@
 from django.conf import settings
 from django.utils import timezone
+from datetime import timedelta
 
 from rest_framework import serializers
 
-from .models import Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument
+from .models import (
+    Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument,
+    PropertyHistory, PropertyDuplicateFlag,
+)
 from .area import conversion_payload, price_per_area
 
 
@@ -213,6 +217,37 @@ class PropertyVerificationSerializer(serializers.ModelSerializer):
         validated_data["updated_by"] = request.user if request else None
         return super().update(instance, validated_data)
 
+
+class PropertyHistorySerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source="actor.full_name", read_only=True, allow_null=True)
+    event_type_display = serializers.CharField(source="get_event_type_display", read_only=True)
+
+    class Meta:
+        model = PropertyHistory
+        fields = ["id", "event_type", "event_type_display", "summary", "changes", "note", "actor_name", "created_at"]
+        read_only_fields = fields
+
+
+class PropertyDuplicateFlagSerializer(serializers.ModelSerializer):
+    candidate_title = serializers.CharField(source="candidate.title", read_only=True)
+    candidate_display_id = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PropertyDuplicateFlag
+        fields = [
+            "id", "candidate", "candidate_title", "candidate_display_id", "score", "reasons",
+            "status", "status_display", "reviewed_by_name", "reviewed_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "candidate", "candidate_title", "candidate_display_id", "score", "reasons",
+            "reviewed_by_name", "reviewed_at", "created_at", "updated_at",
+        ]
+
+    def get_candidate_display_id(self, obj):
+        return f"LP-{obj.candidate_id:03d}"
+
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)
 
@@ -229,6 +264,9 @@ class PropertySerializer(serializers.ModelSerializer):
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
     verification = PropertyVerificationSerializer(read_only=True, allow_null=True)
+    freshness_state = serializers.SerializerMethodField()
+    days_until_expiry = serializers.SerializerMethodField()
+    pending_duplicate_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
@@ -236,7 +274,28 @@ class PropertySerializer(serializers.ModelSerializer):
         read_only_fields = (
             "agency",
             "share_slug",
+            "availability_verified_at", "listing_expires_at", "owner_confirmed_at",
+            "withdrawn_at", "requires_republish_approval", "republish_approval_status",
+            "republish_requested_at", "republish_requested_by", "republish_approved_at",
+            "republish_approved_by", "republish_rejection_reason",
         )
+
+    def get_freshness_state(self, obj):
+        if not obj.availability_verified_at or not obj.listing_expires_at:
+            return "unconfirmed"
+        if obj.listing_expires_at <= timezone.now():
+            return "expired"
+        if obj.listing_expires_at <= timezone.now() + timedelta(days=7):
+            return "expiring_soon"
+        return "fresh"
+
+    def get_days_until_expiry(self, obj):
+        if not obj.listing_expires_at:
+            return None
+        return max(0, (obj.listing_expires_at - timezone.now()).days)
+
+    def get_pending_duplicate_count(self, obj):
+        return sum(flag.status == "pending" for flag in obj.duplicate_flags.all())
 
     def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
@@ -328,16 +387,23 @@ class PropertySerializer(serializers.ModelSerializer):
             "is_published",
             self.instance.is_published if self.instance else False,
         )
+        if "is_published" not in attrs and status_value not in {"available", "reserved", "under_negotiation"}:
+            is_published = False
 
-        if is_published and status_value != "available":
+        if is_published and status_value not in {"available", "reserved", "under_negotiation"}:
             raise serializers.ValidationError(
                 {
                     "is_published": (
-                        "Only properties with status='available' can be published. "
-                        "Set status to 'available' in the same request."
+                        "Only available, reserved, or under-negotiation properties can be published."
                     )
                 }
             )
+
+        withdrawal_reason = attrs.get(
+            "withdrawal_reason", getattr(self.instance, "withdrawal_reason", "") if self.instance else ""
+        )
+        if status_value == "withdrawn" and not str(withdrawal_reason).strip():
+            raise serializers.ValidationError({"withdrawal_reason": "Provide a reason for withdrawal."})
 
         request = self.context.get("request")
         if request and request.user.agency_id:

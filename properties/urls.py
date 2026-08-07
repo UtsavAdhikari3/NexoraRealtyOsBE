@@ -8,6 +8,8 @@ from .views import (
     PropertyFilterOptionsView,
     PropertyVerificationDetailView,
     PropertyVerificationDocumentDetailView,
+    PropertyFreshnessConfirmView, PropertyRepublishRequestView, PropertyRepublishDecisionView,
+    PropertyHistoryListView, PropertyDuplicateFlagListView, PropertyDuplicateFlagDetailView,
 )
 urlpatterns = [
     path(
@@ -50,4 +52,10 @@ urlpatterns = [
         PropertyVerificationDocumentDetailView.as_view(),
         name="property-verification-document-detail",
     ),
+    path("<int:property_id>/freshness/confirm/", PropertyFreshnessConfirmView.as_view(), name="property-freshness-confirm"),
+    path("<int:property_id>/republish/request/", PropertyRepublishRequestView.as_view(), name="property-republish-request"),
+    path("<int:property_id>/republish/decision/", PropertyRepublishDecisionView.as_view(), name="property-republish-decision"),
+    path("<int:property_id>/history/", PropertyHistoryListView.as_view(), name="property-history-list"),
+    path("<int:property_id>/duplicates/", PropertyDuplicateFlagListView.as_view(), name="property-duplicate-list"),
+    path("duplicates/<int:pk>/", PropertyDuplicateFlagDetailView.as_view(), name="property-duplicate-detail"),
 ]

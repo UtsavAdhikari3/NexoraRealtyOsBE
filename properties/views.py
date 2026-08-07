@@ -1,7 +1,8 @@
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework import generics
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -17,12 +18,21 @@ from drf_spectacular.utils import (
 from drf_spectacular.types import OpenApiTypes
 
 from users.models import AgencyUser
-from .models import Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument
+from .models import (
+    Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument,
+    PropertyHistory, PropertyDuplicateFlag,
+)
 from .serializers import (
     PropertySerializer, PropertyMediaSerializer,
     PropertyVerificationSerializer, PropertyVerificationDocumentSerializer,
+    PropertyHistorySerializer, PropertyDuplicateFlagSerializer,
 )
 from .verification import get_or_create_verification
+from .freshness import (
+    confirm_listing_freshness, detect_duplicate_listings, record_property_history,
+)
+from django.utils import timezone
+from datetime import timedelta
 
 
 PROPERTY_FILTER_PARAMETERS = [
@@ -119,6 +129,7 @@ class PropertyListCreateView(generics.ListCreateAPIView):
         ).prefetch_related(
             "media",
             "verification__documents",
+            "duplicate_flags",
         ).order_by("-created_at")
 
         property_type = self.request.query_params.get("property_type")
@@ -170,24 +181,21 @@ class PropertyListCreateView(generics.ListCreateAPIView):
         user = self.request.user
 
         if is_agency_owner_or_manager(user):
-            serializer.save(
+            property_obj = serializer.save(
                 agency=user.agency
             )
-            return
-
-        if is_agent(user):
-            serializer.save(
+        elif is_agent(user):
+            property_obj = serializer.save(
                 agency=user.agency,
                 assigned_agent=user,
                 status="draft",
                 is_published=False,
                 is_featured=False,
             )
-            return
-
-        raise PermissionDenied(
-            "You do not have permission to create properties."
-        )
+        else:
+            raise PermissionDenied("You do not have permission to create properties.")
+        record_property_history(property_obj, "created", "Property listing created", actor=user)
+        detect_duplicate_listings(property_obj)
 
 
 class PropertyFilterOptionsView(APIView):
@@ -298,7 +306,26 @@ class PropertyDetailView(generics.RetrieveUpdateDestroyAPIView):
         ).prefetch_related(
             "media",
             "verification__documents",
+            "duplicate_flags",
         )
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        changes = {}
+        for field, value in serializer.validated_data.items():
+            previous = getattr(instance, field, None)
+            if previous != value:
+                changes[field] = {"from": str(previous) if previous is not None else None, "to": str(value) if value is not None else None}
+        previous_status = instance.status
+        property_obj = serializer.save()
+        if changes:
+            event_type = "withdrawn" if property_obj.status == "withdrawn" else "status_changed" if previous_status != property_obj.status else "updated"
+            summary = "Property withdrawn" if event_type == "withdrawn" else "Property status changed" if event_type == "status_changed" else "Property listing updated"
+            record_property_history(
+                property_obj, event_type, summary, actor=self.request.user,
+                changes=changes, note=property_obj.withdrawal_reason if event_type == "withdrawn" else "",
+            )
+        detect_duplicate_listings(property_obj)
 
     def update(self, request, *args, **kwargs):
         property_obj = self.get_object()
@@ -475,3 +502,119 @@ class PropertyVerificationDocumentDetailView(generics.RetrieveUpdateAPIView):
         if not can_manage_property(request.user, self.get_property()):
             raise PermissionDenied("You do not have permission to update verification documents.")
         return super().partial_update(request, *args, **kwargs)
+
+
+class PropertyFreshnessConfirmView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, property_id):
+        property_obj = get_object_or_404(Property, id=property_id, agency=request.user.agency)
+        if not can_manage_property(request.user, property_obj):
+            raise PermissionDenied("You do not have permission to confirm this listing.")
+        try:
+            valid_for_days = int(request.data.get("valid_for_days", 30))
+        except (TypeError, ValueError):
+            raise ValidationError({"valid_for_days": "Enter a whole number of days."})
+        if valid_for_days < 1 or valid_for_days > 90:
+            raise ValidationError({"valid_for_days": "Choose between 1 and 90 days."})
+        confirm_listing_freshness(
+            property_obj, request.user, valid_for_days,
+            owner_confirmed=bool(request.data.get("owner_confirmed", False)),
+        )
+        return Response(PropertySerializer(property_obj, context={"request": request}).data)
+
+
+class PropertyRepublishRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, property_id):
+        property_obj = get_object_or_404(Property, id=property_id, agency=request.user.agency)
+        if not can_manage_property(request.user, property_obj):
+            raise PermissionDenied("You do not have permission to request republication.")
+        if not property_obj.requires_republish_approval:
+            raise ValidationError({"detail": "This listing does not require republish approval."})
+        property_obj.republish_approval_status = "pending"
+        property_obj.republish_requested_at = timezone.now()
+        property_obj.republish_requested_by = request.user
+        property_obj.republish_rejection_reason = ""
+        property_obj.is_published = False
+        property_obj.save(update_fields=[
+            "republish_approval_status", "republish_requested_at", "republish_requested_by",
+            "republish_rejection_reason", "is_published", "updated_at",
+        ])
+        record_property_history(property_obj, "republish_requested", "Manager approval requested for republication", actor=request.user)
+        return Response(PropertySerializer(property_obj, context={"request": request}).data)
+
+
+class PropertyRepublishDecisionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, property_id):
+        if not is_agency_owner_or_manager(request.user):
+            raise PermissionDenied("Only agency owners or managers can approve republication.")
+        property_obj = get_object_or_404(Property, id=property_id, agency=request.user.agency)
+        if property_obj.republish_approval_status != "pending":
+            raise ValidationError({"detail": "No republish request is pending."})
+        decision = request.data.get("decision")
+        if decision not in {"approve", "reject"}:
+            raise ValidationError({"decision": "Choose approve or reject."})
+        if decision == "approve":
+            now = timezone.now()
+            property_obj.availability_verified_at = now
+            property_obj.listing_expires_at = now + timedelta(days=30)
+            property_obj.requires_republish_approval = False
+            property_obj.republish_approval_status = "approved"
+            property_obj.republish_approved_at = now
+            property_obj.republish_approved_by = request.user
+            property_obj.republish_rejection_reason = ""
+            property_obj.is_published = property_obj.status in {"available", "reserved", "under_negotiation"}
+            event_type, summary = "republish_approved", "Republication approved by manager"
+        else:
+            reason = str(request.data.get("reason", "")).strip()
+            if not reason:
+                raise ValidationError({"reason": "Provide a rejection reason."})
+            property_obj.republish_approval_status = "rejected"
+            property_obj.republish_rejection_reason = reason
+            property_obj.is_published = False
+            event_type, summary = "republish_rejected", "Republication rejected by manager"
+        property_obj.save()
+        record_property_history(property_obj, event_type, summary, actor=request.user, note=property_obj.republish_rejection_reason)
+        return Response(PropertySerializer(property_obj, context={"request": request}).data)
+
+
+class PropertyHistoryListView(generics.ListAPIView):
+    serializer_class = PropertyHistorySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return PropertyHistory.objects.filter(
+            property_id=self.kwargs["property_id"], agency=self.request.user.agency,
+        ).select_related("actor")
+
+
+class PropertyDuplicateFlagListView(generics.ListAPIView):
+    serializer_class = PropertyDuplicateFlagSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        property_obj = get_object_or_404(Property, id=self.kwargs["property_id"], agency=self.request.user.agency)
+        detect_duplicate_listings(property_obj)
+        return PropertyDuplicateFlag.objects.filter(property=property_obj).select_related("candidate", "reviewed_by")
+
+
+class PropertyDuplicateFlagDetailView(generics.UpdateAPIView):
+    serializer_class = PropertyDuplicateFlagSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return PropertyDuplicateFlag.objects.filter(agency=self.request.user.agency).select_related("property", "candidate")
+
+    def perform_update(self, serializer):
+        flag = serializer.instance
+        if not can_manage_property(self.request.user, flag.property):
+            raise PermissionDenied("You do not have permission to review this duplicate flag.")
+        if serializer.validated_data.get("status") not in {"confirmed", "dismissed"}:
+            raise ValidationError({"status": "Choose confirmed or dismissed."})
+        serializer.save(reviewed_by=self.request.user, reviewed_at=timezone.now())

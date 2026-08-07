@@ -327,6 +327,7 @@ class PublicSubmission(AgencyScopedModel):
         ("buyer_guide", "Buyer guide"),
         ("career", "Career"),
         ("demo", "Product demo"),
+        ("listing_report", "Listing report"),
     ]
     STATUS_CHOICES = [
         ("new", "New"),
