@@ -17,8 +17,12 @@ from drf_spectacular.utils import (
 from drf_spectacular.types import OpenApiTypes
 
 from users.models import AgencyUser
-from .models import Property, PropertyMedia
-from .serializers import PropertySerializer, PropertyMediaSerializer
+from .models import Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument
+from .serializers import (
+    PropertySerializer, PropertyMediaSerializer,
+    PropertyVerificationSerializer, PropertyVerificationDocumentSerializer,
+)
+from .verification import get_or_create_verification
 
 
 PROPERTY_FILTER_PARAMETERS = [
@@ -110,9 +114,11 @@ class PropertyListCreateView(generics.ListCreateAPIView):
             agency=self.request.user.agency
         ).select_related(
             "assigned_agent",
-            "agency"
+            "agency",
+            "verification",
         ).prefetch_related(
-            "media"
+            "media",
+            "verification__documents",
         ).order_by("-created_at")
 
         property_type = self.request.query_params.get("property_type")
@@ -287,9 +293,11 @@ class PropertyDetailView(generics.RetrieveUpdateDestroyAPIView):
             agency=self.request.user.agency
         ).select_related(
             "assigned_agent",
-            "agency"
+            "agency",
+            "verification",
         ).prefetch_related(
-            "media"
+            "media",
+            "verification__documents",
         )
 
     def update(self, request, *args, **kwargs):
@@ -406,3 +414,64 @@ class PropertyMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
             )
 
         return super().destroy(request, *args, **kwargs)
+
+
+class PropertyVerificationDetailView(generics.RetrieveUpdateAPIView):
+    serializer_class = PropertyVerificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_property(self):
+        return get_object_or_404(
+            Property.objects.select_related("agency", "assigned_agent"),
+            id=self.kwargs["property_id"],
+            agency=self.request.user.agency,
+        )
+
+    def get_object(self):
+        property_obj = self.get_property()
+        verification = get_or_create_verification(property_obj)
+        return PropertyVerification.objects.prefetch_related(
+            "documents", "documents__reviewed_by"
+        ).select_related("updated_by").get(pk=verification.pk)
+
+    def update(self, request, *args, **kwargs):
+        if not can_manage_property(request.user, self.get_property()):
+            raise PermissionDenied("You do not have permission to update property verification.")
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if not can_manage_property(request.user, self.get_property()):
+            raise PermissionDenied("You do not have permission to update property verification.")
+        return super().partial_update(request, *args, **kwargs)
+
+
+class PropertyVerificationDocumentDetailView(generics.RetrieveUpdateAPIView):
+    serializer_class = PropertyVerificationDocumentSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = "document_type"
+    lookup_url_kwarg = "document_type"
+
+    def get_property(self):
+        return get_object_or_404(
+            Property,
+            id=self.kwargs["property_id"],
+            agency=self.request.user.agency,
+        )
+
+    def get_queryset(self):
+        property_obj = self.get_property()
+        verification = get_or_create_verification(property_obj)
+        return PropertyVerificationDocument.objects.filter(
+            verification=verification,
+            agency=self.request.user.agency,
+        ).select_related("reviewed_by", "verification__property")
+
+    def update(self, request, *args, **kwargs):
+        if not can_manage_property(request.user, self.get_property()):
+            raise PermissionDenied("You do not have permission to update verification documents.")
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if not can_manage_property(request.user, self.get_property()):
+            raise PermissionDenied("You do not have permission to update verification documents.")
+        return super().partial_update(request, *args, **kwargs)

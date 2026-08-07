@@ -6,6 +6,8 @@ from .views import (
     PropertyMediaListCreateView,
     PropertyMediaDetailView,
     PropertyFilterOptionsView,
+    PropertyVerificationDetailView,
+    PropertyVerificationDocumentDetailView,
 )
 urlpatterns = [
     path(
@@ -37,5 +39,15 @@ urlpatterns = [
         "media/<int:pk>/",
         PropertyMediaDetailView.as_view(),
         name="property-media-detail"
+    ),
+    path(
+        "<int:property_id>/verification/",
+        PropertyVerificationDetailView.as_view(),
+        name="property-verification-detail",
+    ),
+    path(
+        "<int:property_id>/verification/documents/<str:document_type>/",
+        PropertyVerificationDocumentDetailView.as_view(),
+        name="property-verification-document-detail",
     ),
 ]

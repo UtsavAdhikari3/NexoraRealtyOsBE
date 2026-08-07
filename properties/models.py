@@ -1,5 +1,6 @@
 from django.db import models
 import uuid
+import builtins
 from django.utils import timezone
 
 from agencies.models import Agency
@@ -410,6 +411,102 @@ class PropertyMedia(models.Model):
 
     def __str__(self):
         return f"{self.property.title} - {self.media_type}"
+
+
+class PropertyVerification(models.Model):
+    MILESTONES = [
+        ("owner_identity_verified", "Owner identity verified"),
+        ("ownership_document_received", "Ownership document received"),
+        ("physically_inspected", "Agency physically inspected"),
+        ("documents_reviewed", "Documents reviewed"),
+        ("fully_verified", "Fully verified"),
+    ]
+
+    property = models.OneToOneField(Property, on_delete=models.CASCADE, related_name="verification")
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_verifications")
+    owner_identity_verified = models.BooleanField(default=False)
+    owner_identity_verified_at = models.DateTimeField(null=True, blank=True)
+    ownership_document_received = models.BooleanField(default=False)
+    ownership_document_received_at = models.DateTimeField(null=True, blank=True)
+    physically_inspected = models.BooleanField(default=False)
+    physically_inspected_at = models.DateTimeField(null=True, blank=True)
+    documents_reviewed = models.BooleanField(default=False)
+    documents_reviewed_at = models.DateTimeField(null=True, blank=True)
+    fully_verified = models.BooleanField(default=False)
+    fully_verified_at = models.DateTimeField(null=True, blank=True)
+    inspection_notes = models.TextField(blank=True)
+    review_notes = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="updated_property_verifications",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @builtins.property
+    def verification_level(self):
+        level = "unverified"
+        for field, _ in self.MILESTONES:
+            if getattr(self, field):
+                level = field
+            else:
+                break
+        return level
+
+    @builtins.property
+    def verification_level_display(self):
+        return dict(self.MILESTONES).get(self.verification_level, "Not verified")
+
+
+class PropertyVerificationDocument(models.Model):
+    DOCUMENT_TYPES = [
+        ("lalpurja", "Lalpurja"),
+        ("owner_identity", "Owner citizenship or company registration"),
+        ("napi_naksa", "Napi Naksa or trace map"),
+        ("char_killa", "Char Killa"),
+        ("malpot_receipt", "Malpot receipt"),
+        ("property_tax_clearance", "Property-tax clearance"),
+        ("building_map_approval", "Building map approval"),
+        ("construction_completion", "Construction-completion certificate"),
+        ("power_of_attorney", "Power of attorney"),
+        ("marketing_authorization", "Agency marketing authorization"),
+    ]
+    STATUS_CHOICES = [
+        ("missing", "Missing"), ("received", "Received"),
+        ("under_review", "Under Review"), ("approved", "Approved"),
+        ("rejected", "Rejected / Needs Correction"),
+        ("not_applicable", "Not Applicable"),
+    ]
+
+    verification = models.ForeignKey(PropertyVerification, on_delete=models.CASCADE, related_name="documents")
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_verification_documents")
+    document_type = models.CharField(max_length=50, choices=DOCUMENT_TYPES)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="missing")
+    file = models.FileField(upload_to="property_verification/", null=True, blank=True)
+    external_url = models.URLField(blank=True)
+    document_number = models.CharField(max_length=100, blank=True)
+    issued_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        AgencyUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_property_documents",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["verification", "document_type"],
+                name="unique_property_verification_document_type",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.verification.property.title} - {self.get_document_type_display()}"
 
 
 class PropertyEvent(models.Model):

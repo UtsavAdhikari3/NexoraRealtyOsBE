@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.core.exceptions import ObjectDoesNotExist
 
 from leads.services import normalize_phone
 
@@ -43,6 +44,7 @@ class PublicPropertySerializer(serializers.ModelSerializer):
     price_per_land_sqft = serializers.SerializerMethodField()
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
+    verification_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
@@ -90,6 +92,7 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "furnishing_status_display",
             "facing_direction",
             "facing_direction_display",
+            "verification_summary",
 
             "amenities",
             "virtual_tour_url",
@@ -189,6 +192,28 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             return None
 
         return obj.get_facing_direction_display()
+
+    def get_verification_summary(self, obj):
+        try:
+            verification = obj.verification
+        except ObjectDoesNotExist:
+            return {
+                "level": "unverified", "label": "Not verified", "is_fully_verified": False,
+                "completed_milestones": 0, "approved_documents": 0, "total_documents": 10,
+            }
+        documents = list(verification.documents.all())
+        return {
+            "level": verification.verification_level,
+            "label": verification.verification_level_display,
+            "is_fully_verified": verification.fully_verified,
+            "completed_milestones": sum(
+                bool(getattr(verification, field)) for field, _ in verification.MILESTONES
+            ),
+            "approved_documents": sum(
+                document.status in {"approved", "not_applicable"} for document in documents
+            ),
+            "total_documents": 10,
+        }
 
 
 class PublicPropertyInquirySerializer(serializers.Serializer):

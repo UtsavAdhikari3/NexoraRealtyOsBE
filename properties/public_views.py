@@ -113,8 +113,10 @@ def get_public_properties_queryset(license_number):
     ).select_related(
         "agency",
         "assigned_agent",
+        "verification",
     ).prefetch_related(
         "media",
+        "verification__documents",
     ).order_by(
         "-is_featured",
         "-published_at",
@@ -310,7 +312,7 @@ class PublicPropertyShareDetailView(generics.RetrieveAPIView):
             agency__is_active=True,
             is_published=True,
             status="available",
-        ).select_related("agency", "assigned_agent").prefetch_related("media")
+        ).select_related("agency", "assigned_agent", "verification").prefetch_related("media", "verification__documents")
 
 
 class PublicPropertyFilterOptionsView(APIView):

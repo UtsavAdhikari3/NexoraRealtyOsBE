@@ -1,8 +1,9 @@
 from django.conf import settings
+from django.utils import timezone
 
 from rest_framework import serializers
 
-from .models import Property, PropertyMedia
+from .models import Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument
 from .area import conversion_payload, price_per_area
 
 
@@ -88,6 +89,130 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
         return instance
 
 
+class PropertyVerificationDocumentSerializer(serializers.ModelSerializer):
+    document_type_display = serializers.CharField(source="get_document_type_display", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.full_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PropertyVerificationDocument
+        fields = [
+            "id", "document_type", "document_type_display", "status", "status_display",
+            "file", "external_url", "document_number", "issued_date", "expiry_date",
+            "notes", "reviewed_by", "reviewed_by_name", "reviewed_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "document_type", "reviewed_by", "reviewed_by_name", "reviewed_at",
+            "created_at", "updated_at",
+        ]
+
+    def validate_file(self, value):
+        if value is None:
+            return value
+        max_size_mb = getattr(settings, "MAX_UPLOAD_SIZE_MB", 15)
+        if value.size > max_size_mb * 1024 * 1024:
+            raise serializers.ValidationError(f"File size cannot exceed {max_size_mb} MB.")
+        allowed = {
+            "image/jpeg", "image/png", "image/webp", "application/pdf",
+        }
+        content_type = getattr(value, "content_type", "")
+        if content_type and content_type not in allowed:
+            raise serializers.ValidationError("Upload a PDF, JPEG, PNG, or WebP document.")
+        return value
+
+    def validate(self, attrs):
+        issued = attrs.get("issued_date", getattr(self.instance, "issued_date", None))
+        expiry = attrs.get("expiry_date", getattr(self.instance, "expiry_date", None))
+        if issued and expiry and expiry < issued:
+            raise serializers.ValidationError({"expiry_date": "Expiry date cannot be before issued date."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        new_file = validated_data.get("file")
+        new_url = validated_data.get("external_url")
+        if instance.status == "missing" and (new_file or new_url) and "status" not in validated_data:
+            validated_data["status"] = "received"
+        if validated_data.get("status") in {"approved", "rejected", "not_applicable"}:
+            request = self.context.get("request")
+            validated_data["reviewed_by"] = request.user if request else None
+            validated_data["reviewed_at"] = timezone.now()
+        elif "status" in validated_data:
+            validated_data["reviewed_by"] = None
+            validated_data["reviewed_at"] = None
+        return super().update(instance, validated_data)
+
+
+class PropertyVerificationSerializer(serializers.ModelSerializer):
+    documents = PropertyVerificationDocumentSerializer(many=True, read_only=True)
+    verification_level = serializers.CharField(read_only=True)
+    verification_level_display = serializers.CharField(read_only=True)
+    completed_milestones = serializers.SerializerMethodField()
+    approved_document_count = serializers.SerializerMethodField()
+    total_document_count = serializers.SerializerMethodField()
+    updated_by_name = serializers.CharField(source="updated_by.full_name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PropertyVerification
+        fields = [
+            "id", "verification_level", "verification_level_display",
+            "owner_identity_verified", "owner_identity_verified_at",
+            "ownership_document_received", "ownership_document_received_at",
+            "physically_inspected", "physically_inspected_at",
+            "documents_reviewed", "documents_reviewed_at",
+            "fully_verified", "fully_verified_at", "inspection_notes", "review_notes",
+            "completed_milestones", "approved_document_count", "total_document_count",
+            "updated_by", "updated_by_name", "documents", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "owner_identity_verified_at", "ownership_document_received_at",
+            "physically_inspected_at", "documents_reviewed_at", "fully_verified_at",
+            "updated_by", "created_at", "updated_at",
+        ]
+
+    def get_completed_milestones(self, obj):
+        return sum(bool(getattr(obj, field)) for field, _ in obj.MILESTONES)
+
+    def get_approved_document_count(self, obj):
+        return obj.documents.filter(status__in=["approved", "not_applicable"]).count()
+
+    def get_total_document_count(self, obj):
+        return len(PropertyVerificationDocument.DOCUMENT_TYPES)
+
+    def validate(self, attrs):
+        values = {
+            field: attrs.get(field, getattr(self.instance, field, False))
+            for field, _ in PropertyVerification.MILESTONES
+        }
+        seen_false = False
+        for field, _ in PropertyVerification.MILESTONES:
+            if seen_false and values[field]:
+                raise serializers.ValidationError({field: "Complete the previous verification milestones first."})
+            seen_false = seen_false or not values[field]
+
+        documents = self.instance.documents.all() if self.instance else []
+        status_by_type = {document.document_type: document.status for document in documents}
+        if values["ownership_document_received"] and status_by_type.get("lalpurja") == "missing":
+            raise serializers.ValidationError({
+                "ownership_document_received": "Mark the Lalpurja as received before completing this milestone."
+            })
+        if values["documents_reviewed"]:
+            unresolved = [status for status in status_by_type.values() if status not in {"approved", "rejected", "not_applicable"}]
+            if unresolved:
+                raise serializers.ValidationError({"documents_reviewed": "Resolve every checklist document first."})
+        if values["fully_verified"]:
+            incomplete = [status for status in status_by_type.values() if status not in {"approved", "not_applicable"}]
+            if incomplete:
+                raise serializers.ValidationError({"fully_verified": "Every applicable document must be approved."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        for field, _ in PropertyVerification.MILESTONES:
+            if field in validated_data and validated_data[field] != getattr(instance, field):
+                validated_data[f"{field}_at"] = timezone.now() if validated_data[field] else None
+        request = self.context.get("request")
+        validated_data["updated_by"] = request.user if request else None
+        return super().update(instance, validated_data)
+
 class PropertySerializer(serializers.ModelSerializer):
     media = PropertyMediaSerializer(many=True, read_only=True)
 
@@ -103,6 +228,7 @@ class PropertySerializer(serializers.ModelSerializer):
     price_per_land_sqft = serializers.SerializerMethodField()
     furnishing_status_display = serializers.SerializerMethodField()
     facing_direction_display = serializers.SerializerMethodField()
+    verification = PropertyVerificationSerializer(read_only=True, allow_null=True)
 
     class Meta:
         model = Property
