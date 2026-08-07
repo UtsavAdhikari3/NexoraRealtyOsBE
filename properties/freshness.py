@@ -83,6 +83,7 @@ def confirm_listing_freshness(property_obj, actor, valid_for_days=30, owner_conf
 
 
 def process_listing_freshness(now=None):
+    from agencies.localization import format_localized_date, render_message
     from operations.models import Notification
     from users.models import AgencyUser
 
@@ -112,14 +113,26 @@ def process_listing_freshness(now=None):
             reminder_type=reminder_type,
         )
         if created:
+            template_key = "listing_expired" if reminder_type == "expired" else "listing_confirmation_due"
+            localized = render_message(
+                property_obj.agency, template_key,
+                property_title=property_obj.title,
+                expiry_date=format_localized_date(
+                    property_obj.listing_expires_at,
+                    date_system=property_obj.agency.default_date_system,
+                    language=property_obj.agency.default_language,
+                    nepali_digits=property_obj.agency.use_nepali_digits,
+                    include_time=True,
+                ),
+            )
             recipients = AgencyUser.objects.filter(
                 agency=property_obj.agency, is_active=True,
             ).filter(Q(id=property_obj.assigned_agent_id) | Q(role__in=["agency_owner", "agency_manager"])).distinct()
             Notification.objects.bulk_create([
                 Notification(
                     agency=property_obj.agency, user=user,
-                    title="Listing expired" if reminder_type == "expired" else "Listing confirmation due",
-                    message=f"{property_obj.title} {'has expired' if reminder_type == 'expired' else 'needs availability reconfirmation'}.",
+                    title=localized["subject"],
+                    message=localized["body"],
                     category="listing_freshness", link=f"/properties/{property_obj.id}",
                 ) for user in recipients
             ])

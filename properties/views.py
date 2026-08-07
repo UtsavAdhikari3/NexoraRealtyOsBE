@@ -729,6 +729,15 @@ class PropertyDistributionAssetView(APIView):
         if asset_type not in ASSET_SPECS:
             raise ValidationError({"asset_type": "Unknown distribution asset."})
         property_obj = get_distribution_property(request, property_id)
+        language = request.query_params.get("language", property_obj.agency.default_language)
+        date_system = request.query_params.get("date_system", property_obj.agency.default_date_system)
+        nepali_digits = request.query_params.get(
+            "nepali_digits", str(property_obj.agency.use_nepali_digits)
+        ).lower() in {"1", "true", "yes"}
+        if language not in {"en", "ne"}:
+            raise ValidationError({"language": "Choose en or ne."})
+        if date_system not in {"ad", "bs"}:
+            raise ValidationError({"date_system": "Choose ad or bs."})
         link = None
         if request.query_params.get("link"):
             link = get_object_or_404(
@@ -747,10 +756,16 @@ class PropertyDistributionAssetView(APIView):
             response = HttpResponse(qr_png(url), content_type="image/png")
             filename = f"{stem}.png"
         elif asset_type == "brochure":
-            response = HttpResponse(brochure_pdf(property_obj, url), content_type="application/pdf")
+            response = HttpResponse(
+                brochure_pdf(property_obj, url, language, date_system, nepali_digits),
+                content_type="application/pdf",
+            )
             filename = f"{stem}.pdf"
         elif asset_type == "window_card":
-            response = HttpResponse(window_card_pdf(property_obj, url), content_type="application/pdf")
+            response = HttpResponse(
+                window_card_pdf(property_obj, url, language, date_system, nepali_digits),
+                content_type="application/pdf",
+            )
             filename = f"{stem}.pdf"
         elif asset_type == "portal_csv":
             response = HttpResponse(portal_csv([property_obj], request), content_type="text/csv; charset=utf-8")
@@ -759,7 +774,10 @@ class PropertyDistributionAssetView(APIView):
             response = FileResponse(watermarked_zip(property_obj), content_type="application/zip")
             filename = f"{stem}.zip"
         else:
-            response = FileResponse(media_package(property_obj, url), content_type="application/zip")
+            response = FileResponse(
+                media_package(property_obj, url, language, date_system, nepali_digits),
+                content_type="application/zip",
+            )
             filename = f"{stem}.zip"
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response

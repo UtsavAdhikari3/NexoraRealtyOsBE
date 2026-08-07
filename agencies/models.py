@@ -4,6 +4,18 @@ from django.utils.text import slugify
 
 
 class Agency(models.Model):
+    LANGUAGE_ENGLISH = "en"
+    LANGUAGE_NEPALI = "ne"
+    LANGUAGE_CHOICES = [
+        (LANGUAGE_ENGLISH, "English"),
+        (LANGUAGE_NEPALI, "नेपाली"),
+    ]
+    DATE_SYSTEM_AD = "ad"
+    DATE_SYSTEM_BS = "bs"
+    DATE_SYSTEM_CHOICES = [
+        (DATE_SYSTEM_AD, "Anno Domini (AD)"),
+        (DATE_SYSTEM_BS, "Bikram Sambat (BS)"),
+    ]
     PAYMENT_UNPAID = "unpaid"
     PAYMENT_PENDING = "pending"
     PAYMENT_PAID = "paid"
@@ -33,6 +45,9 @@ class Agency(models.Model):
     province = models.CharField(max_length=100, blank=True)
     district = models.CharField(max_length=100, blank=True)
     city = models.CharField(max_length=100, blank=True)
+    municipality = models.CharField(max_length=150, blank=True)
+    ward_number = models.CharField(max_length=20, blank=True)
+    tole = models.CharField(max_length=150, blank=True)
     business_hours = models.CharField(max_length=255, blank=True)
     primary_color = models.CharField(max_length=20, blank=True)
     seo_title = models.CharField(max_length=70, blank=True)
@@ -40,6 +55,15 @@ class Agency(models.Model):
     custom_domain = models.CharField(max_length=255, blank=True)
     website_template = models.CharField(max_length=80, default="luxury-agency")
     website_config = models.JSONField(default=dict, blank=True)
+    default_language = models.CharField(
+        max_length=2, choices=LANGUAGE_CHOICES, default=LANGUAGE_ENGLISH
+    )
+    default_date_system = models.CharField(
+        max_length=2, choices=DATE_SYSTEM_CHOICES, default=DATE_SYSTEM_AD
+    )
+    use_nepali_digits = models.BooleanField(default=False)
+    timezone = models.CharField(max_length=50, default="Asia/Kathmandu")
+    message_templates = models.JSONField(default=dict, blank=True)
     is_website_published = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     subscription_expires_at = models.DateTimeField(null=True, blank=True)

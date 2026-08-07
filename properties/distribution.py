@@ -4,15 +4,21 @@ import os
 import re
 import tempfile
 import zipfile
-from decimal import Decimal
 
 import qrcode
 from django.conf import settings
+from django.utils import timezone
 from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 from reportlab.lib.colors import HexColor, white
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+from agencies.localization import (
+    format_localized_date, format_nepal_address, format_nepal_currency,
+    format_nepal_phone,
+)
 
 
 ASSET_SPECS = {
@@ -106,16 +112,14 @@ def _draw_wrapped(draw, text, xy, font, fill, max_width, max_lines=3, spacing=8)
     return y
 
 
-def format_price(property_obj):
-    price = Decimal(property_obj.price or 0)
+def format_price(property_obj, language="en", nepali_digits=False):
     suffix = " / month" if property_obj.purpose == "rent" else ""
-    if price >= Decimal("10000000"):
-        value = f"NPR {price / Decimal('10000000'):.2f} Crore"
-    elif price >= Decimal("100000"):
-        value = f"NPR {price / Decimal('100000'):.2f} Lakh"
-    else:
-        value = f"NPR {price:,.0f}"
-    return value.replace(".00 ", " ") + suffix
+    if language == "ne" and suffix:
+        suffix = " / महिना"
+    return format_nepal_currency(
+        property_obj.price, language=language,
+        nepali_digits=nepali_digits, suffix=suffix,
+    )
 
 
 def format_area(property_obj):
@@ -126,11 +130,10 @@ def format_area(property_obj):
     return "Area on request"
 
 
-def property_location(property_obj):
-    return ", ".join(filter(None, [
-        property_obj.tole, property_obj.municipality or property_obj.city,
-        property_obj.district,
-    ]))
+def property_location(property_obj, language="en", nepali_digits=False):
+    return format_nepal_address(
+        property_obj, language=language, nepali_digits=nepali_digits
+    )
 
 
 def canonical_property_url(property_obj):
@@ -156,9 +159,13 @@ def qr_png(url, box_size=10):
 
 
 def captions(property_obj, url):
+    use_nepali_digits = property_obj.agency.use_nepali_digits
     purpose_en = {"sale": "For sale", "rent": "For rent", "lease": "For lease"}.get(property_obj.purpose, "Available")
     purpose_ne = {"sale": "बिक्रीमा", "rent": "भाडामा", "lease": "लिजमा"}.get(property_obj.purpose, "उपलब्ध")
     location = property_location(property_obj)
+    location_ne = property_location(
+        property_obj, "ne", use_nepali_digits
+    )
     details = " | ".join(filter(None, [
         f"{property_obj.bedrooms} bedrooms" if property_obj.bedrooms else "",
         format_area(property_obj),
@@ -173,12 +180,12 @@ def captions(property_obj, url):
     ).strip()
     nepali = (
         f"{purpose_ne}: {property_obj.title}\n"
-        f"स्थान: {location}\nमूल्य: {format_price(property_obj)}\n"
+        f"स्थान: {location_ne}\nमूल्य: {format_price(property_obj, 'ne', use_nepali_digits)}\n"
         f"विवरण: {details}\n\n{property_obj.short_description or property_obj.description[:220]}\n\n"
         f"थप जानकारी र सम्पर्क: {url}\n#नेपालघरजग्गा #जग्गाबिक्री #घरबिक्री"
     ).strip()
     short_en = f"{property_obj.title} - {format_price(property_obj)} at {location}. Details: {url}"
-    short_ne = f"{property_obj.title} - {location} मा {format_price(property_obj)}। थप जानकारी: {url}"
+    short_ne = f"{property_obj.title} - {location_ne} मा {format_price(property_obj, 'ne', use_nepali_digits)}। थप जानकारी: {url}"
     return {
         "english": {
             "facebook": english,
@@ -190,7 +197,7 @@ def captions(property_obj, url):
         "nepali": {
             "facebook": nepali,
             "instagram": nepali,
-            "story": f"{purpose_ne}\n{property_obj.title}\n{format_price(property_obj)}\n{url}",
+            "story": f"{purpose_ne}\n{property_obj.title}\n{format_price(property_obj, 'ne', use_nepali_digits)}\n{url}",
             "whatsapp": short_ne,
             "viber": short_ne,
         },
@@ -281,12 +288,77 @@ def watermarked_zip(property_obj):
     return output
 
 
-def _pdf_wrap(pdf, text, x, y, max_width, font="Helvetica", size=10, leading=14, max_lines=None):
+_PDF_FONTS_READY = False
+
+
+def _register_pdf_fonts():
+    global _PDF_FONTS_READY
+    if _PDF_FONTS_READY:
+        return
+    paths = {
+        "NexoraLatin": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "NexoraLatin-Bold": "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "NexoraDevanagari": "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "NexoraDevanagari-Bold": "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+    }
+    if all(os.path.exists(path) for path in paths.values()):
+        for name, path in paths.items():
+            pdfmetrics.registerFont(TTFont(name, path, shapable=True))
+        _PDF_FONTS_READY = True
+        return
+    raise RuntimeError("A Unicode PDF font is required. Install fonts-noto-core.")
+
+
+def _pdf_runs(text):
+    runs = []
+    current, devanagari = "", None
+    for character in str(text):
+        char_is_devanagari = "\u0900" <= character <= "\u097f"
+        if character.isspace() or not character.isalpha():
+            current += character
+            continue
+        if devanagari is None:
+            devanagari = char_is_devanagari
+        if char_is_devanagari != devanagari and current:
+            runs.append((current, devanagari))
+            current = character
+            devanagari = char_is_devanagari
+        else:
+            current += character
+    if current:
+        runs.append((current, bool(devanagari)))
+    return runs
+
+
+def _pdf_run_font(font, devanagari):
+    bold = font.endswith("-Bold")
+    family = "NexoraDevanagari" if devanagari else "NexoraLatin"
+    return f"{family}-Bold" if bold else family
+
+
+def _pdf_text_width(text, font, size):
+    return sum(
+        pdfmetrics.stringWidth(run, _pdf_run_font(font, devanagari), size)
+        for run, devanagari in _pdf_runs(text)
+    )
+
+
+def _pdf_draw(pdf, x, y, text, font="NexoraSans", size=10, align="left"):
+    width = _pdf_text_width(str(text), font, size)
+    cursor = x - width if align == "right" else x - width / 2 if align == "center" else x
+    for run, devanagari in _pdf_runs(text):
+        run_font = _pdf_run_font(font, devanagari)
+        pdf.setFont(run_font, size)
+        pdf.drawString(cursor, y, run, shaping=True)
+        cursor += pdfmetrics.stringWidth(run, run_font, size)
+
+
+def _pdf_wrap(pdf, text, x, y, max_width, font="NexoraSans", size=10, leading=14, max_lines=None):
     words = str(text or "").split()
     lines, line = [], ""
     for word in words:
         candidate = f"{line} {word}".strip()
-        if pdf.stringWidth(candidate, font, size) <= max_width:
+        if _pdf_text_width(candidate, font, size) <= max_width:
             line = candidate
         else:
             if line:
@@ -296,14 +368,16 @@ def _pdf_wrap(pdf, text, x, y, max_width, font="Helvetica", size=10, leading=14,
                 break
     if line and (not max_lines or len(lines) < max_lines):
         lines.append(line)
-    pdf.setFont(font, size)
     for line in lines:
-        pdf.drawString(x, y, line)
+        _pdf_draw(pdf, x, y, line, font, size)
         y -= leading
     return y
 
 
-def brochure_pdf(property_obj, url):
+def brochure_pdf(
+    property_obj, url, language="en", date_system="ad", nepali_digits=False
+):
+    _register_pdf_fonts()
     output = io.BytesIO()
     pdf = canvas.Canvas(output, pagesize=A4)
     page_width, page_height = A4
@@ -317,54 +391,65 @@ def brochure_pdf(property_obj, url):
     pdf.drawImage(ImageReader(hero_bytes), 0, page_height - 360, width=page_width, height=360, mask="auto")
     pdf.setFillColorRGB(0, 0, 0, alpha=.62)
     pdf.rect(0, page_height - 360, page_width, 105, stroke=0, fill=1)
-    pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 11); pdf.drawString(34, page_height - 282, property_obj.agency.name)
-    pdf.setFont("Helvetica-Bold", 25)
-    _pdf_wrap(pdf, property_obj.title, 34, page_height - 312, page_width - 68, "Helvetica-Bold", 25, 28, 2)
+    pdf.setFillColor(white); _pdf_draw(pdf, 34, page_height - 282, property_obj.agency.name, "NexoraSans-Bold", 11)
+    _pdf_wrap(pdf, property_obj.title, 34, page_height - 312, page_width - 68, "NexoraSans-Bold", 25, 28, 2)
     pdf.setFillColor(brand); pdf.rect(0, 0, page_width, page_height - 360, stroke=0, fill=1)
-    pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 24); pdf.drawString(34, page_height - 407, format_price(property_obj))
-    pdf.setFont("Helvetica", 11); pdf.drawString(34, page_height - 430, property_location(property_obj))
+    pdf.setFillColor(white); _pdf_draw(pdf, 34, page_height - 407, format_price(property_obj, language, nepali_digits), "NexoraSans-Bold", 24)
+    _pdf_draw(pdf, 34, page_height - 430, property_location(property_obj, language, nepali_digits), "NexoraSans", 11)
+    labels = {
+        "property": "सम्पत्ति" if language == "ne" else "Property",
+        "purpose": "प्रयोजन" if language == "ne" else "Purpose",
+        "area": "क्षेत्रफल" if language == "ne" else "Area",
+        "bedrooms": "बेडरूम" if language == "ne" else "Bedrooms",
+        "bathrooms": "बाथरूम" if language == "ne" else "Bathrooms",
+        "road": "सडक पहुँच" if language == "ne" else "Road access",
+    }
     facts = [
-        ("Property", property_obj.get_property_type_display()), ("Purpose", property_obj.get_purpose_display()),
-        ("Area", format_area(property_obj)), ("Bedrooms", str(property_obj.bedrooms or "-")),
-        ("Bathrooms", str(property_obj.bathrooms or "-")),
-        ("Road access", f"{property_obj.road_access_value:g} {property_obj.road_access_unit}" if property_obj.road_access_value else "On request"),
+        (labels["property"], property_obj.get_property_type_display()), (labels["purpose"], property_obj.get_purpose_display()),
+        (labels["area"], format_area(property_obj)), (labels["bedrooms"], str(property_obj.bedrooms or "-")),
+        (labels["bathrooms"], str(property_obj.bathrooms or "-")),
+        (labels["road"], f"{property_obj.road_access_value:g} {property_obj.road_access_unit}" if property_obj.road_access_value else ("सम्पर्क गर्नुहोस्" if language == "ne" else "On request")),
     ]
     y = page_height - 485
     for index, (label, value) in enumerate(facts):
         col = index % 2; row = index // 2
         x = 34 + col * 270; item_y = y - row * 52
-        pdf.setFillColorRGB(1, 1, 1, alpha=.72); pdf.setFont("Helvetica", 8); pdf.drawString(x, item_y, label.upper())
-        pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 12); pdf.drawString(x, item_y - 17, value)
+        pdf.setFillColorRGB(1, 1, 1, alpha=.72); _pdf_draw(pdf, x, item_y, label.upper(), "NexoraSans", 8)
+        pdf.setFillColor(white); _pdf_draw(pdf, x, item_y - 17, value, "NexoraSans-Bold", 12)
     qr_data = qr_png(url); pdf.drawImage(ImageReader(io.BytesIO(qr_data)), page_width - 137, 35, 102, 102)
-    pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 9); pdf.drawString(34, 105, "SCAN FOR LIVE DETAILS AND ENQUIRY")
-    pdf.setFont("Helvetica", 9); pdf.drawString(34, 88, property_obj.agency.phone or property_obj.agency.email or property_obj.agency.license_number)
-    pdf.drawString(34, 71, url[:78])
+    pdf.setFillColor(white); _pdf_draw(pdf, 34, 105, "लाइभ विवरणका लागि QR स्क्यान गर्नुहोस्" if language == "ne" else "SCAN FOR LIVE DETAILS AND ENQUIRY", "NexoraSans-Bold", 9)
+    _pdf_draw(pdf, 34, 88, format_nepal_phone(property_obj.agency.phone, nepali_digits=nepali_digits) if property_obj.agency.phone else property_obj.agency.email or property_obj.agency.license_number, "NexoraSans", 9)
+    _pdf_draw(pdf, 34, 71, url[:78], "NexoraSans", 9)
     pdf.showPage()
     pdf.setFillColor(brand); pdf.rect(0, page_height - 92, page_width, 92, stroke=0, fill=1)
-    pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 22); pdf.drawString(34, page_height - 55, "Property details")
-    pdf.setFont("Helvetica", 10); pdf.drawString(34, page_height - 74, property_obj.agency.name)
+    pdf.setFillColor(white); _pdf_draw(pdf, 34, page_height - 55, "सम्पत्तिको विवरण" if language == "ne" else "Property details", "NexoraSans-Bold", 22)
+    _pdf_draw(pdf, 34, page_height - 74, property_obj.agency.name, "NexoraSans", 10)
     pdf.setFillColor(HexColor("#263238")); y = page_height - 130
-    y = _pdf_wrap(pdf, property_obj.description or property_obj.short_description or "Contact the agency for full details.", 34, y, page_width - 68, "Helvetica", 11, 16, 14)
+    y = _pdf_wrap(pdf, property_obj.description or property_obj.short_description or ("पूर्ण विवरणका लागि एजेन्सीलाई सम्पर्क गर्नुहोस्।" if language == "ne" else "Contact the agency for full details."), 34, y, page_width - 68, "NexoraSans", 11, 16, 14)
     y -= 22
     detail_rows = [
-        ("Address", property_obj.address or property_location(property_obj)),
-        ("Land classification", property_obj.get_land_use_classification_display() if property_obj.land_use_classification else "-"),
-        ("Road", f"{property_obj.get_road_type_display() if property_obj.road_type else ''} {property_obj.road_access_value or ''} {property_obj.road_access_unit or ''}".strip()),
-        ("Facing", property_obj.get_facing_direction_display() if property_obj.facing_direction else "-"),
-        ("Utilities", ", ".join(label for label, value in [("Water", property_obj.has_water_supply), ("Electricity", property_obj.has_electricity), ("Drainage", property_obj.has_drainage), ("Sewage", property_obj.has_sewage)] if value) or "Ask agency"),
-        ("Listing ID", f"LP-{property_obj.id:03d}"),
+        ("ठेगाना" if language == "ne" else "Address", property_obj.address or property_location(property_obj, language, nepali_digits)),
+        ("जग्गा वर्गीकरण" if language == "ne" else "Land classification", property_obj.get_land_use_classification_display() if property_obj.land_use_classification else "-"),
+        ("सडक" if language == "ne" else "Road", f"{property_obj.get_road_type_display() if property_obj.road_type else ''} {property_obj.road_access_value or ''} {property_obj.road_access_unit or ''}".strip()),
+        ("मोहडा" if language == "ne" else "Facing", property_obj.get_facing_direction_display() if property_obj.facing_direction else "-"),
+        ("सुविधा" if language == "ne" else "Utilities", ", ".join(label for label, value in [(("पानी" if language == "ne" else "Water"), property_obj.has_water_supply), (("बिजुली" if language == "ne" else "Electricity"), property_obj.has_electricity), (("ढल" if language == "ne" else "Drainage"), property_obj.has_drainage), (("सिवरेज" if language == "ne" else "Sewage"), property_obj.has_sewage)] if value) or ("एजेन्सीलाई सोध्नुहोस्" if language == "ne" else "Ask agency")),
+        ("लिस्टिङ आईडी" if language == "ne" else "Listing ID", f"LP-{property_obj.id:03d}"),
     ]
     for label, value in detail_rows:
-        pdf.setFillColor(HexColor("#637079")); pdf.setFont("Helvetica-Bold", 9); pdf.drawString(34, y, label.upper())
-        pdf.setFillColor(HexColor("#263238")); pdf.setFont("Helvetica", 11); pdf.drawString(180, y, str(value)[:70]); y -= 30
+        pdf.setFillColor(HexColor("#637079")); _pdf_draw(pdf, 34, y, label.upper(), "NexoraSans-Bold", 9)
+        pdf.setFillColor(HexColor("#263238")); _pdf_draw(pdf, 180, y, str(value)[:70], "NexoraSans", 11); y -= 30
     pdf.setStrokeColor(HexColor("#DDE5E3")); pdf.line(34, 78, page_width - 34, 78)
-    pdf.setFont("Helvetica", 8); pdf.setFillColor(HexColor("#637079")); pdf.drawString(34, 55, "Information is subject to owner confirmation and agency verification.")
-    pdf.drawRightString(page_width - 34, 55, f"Generated by Nexora RealtyOS | LP-{property_obj.id:03d}")
+    pdf.setFillColor(HexColor("#637079")); _pdf_draw(pdf, 34, 55, "जानकारी धनीको पुष्टि र एजेन्सी प्रमाणीकरणमा निर्भर छ।" if language == "ne" else "Information is subject to owner confirmation and agency verification.", "NexoraSans", 8)
+    generated = format_localized_date(timezone.now(), date_system=date_system, language=language, nepali_digits=nepali_digits)
+    _pdf_draw(pdf, page_width - 34, 55, f"Nexora RealtyOS | LP-{property_obj.id:03d} | {generated}", "NexoraSans", 8, "right")
     pdf.save(); output.seek(0)
     return output.getvalue()
 
 
-def window_card_pdf(property_obj, url):
+def window_card_pdf(
+    property_obj, url, language="en", date_system="ad", nepali_digits=False
+):
+    _register_pdf_fonts()
     output = io.BytesIO(); pdf = canvas.Canvas(output, pagesize=A4); width, height = A4
     brand_hex = property_obj.agency.primary_color or "#496B5A"
     try: brand = HexColor(brand_hex)
@@ -373,20 +458,21 @@ def window_card_pdf(property_obj, url):
     hero_bytes = io.BytesIO(); hero.save(hero_bytes, "JPEG", quality=90); hero_bytes.seek(0)
     pdf.drawImage(ImageReader(hero_bytes), 0, height - 430, width=width, height=350, mask="auto")
     pdf.setFillColor(brand); pdf.rect(0, height - 80, width, 80, stroke=0, fill=1)
-    pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 22); pdf.drawString(28, height - 48, property_obj.agency.name)
-    pdf.setFont("Helvetica", 10); pdf.drawRightString(width - 28, height - 48, property_obj.agency.phone or property_obj.agency.license_number)
-    pdf.setFillColor(HexColor("#263238")); pdf.setFont("Helvetica-Bold", 27)
-    title_y = _pdf_wrap(pdf, property_obj.title, 28, height - 468, width - 56, "Helvetica-Bold", 27, 31, 2)
-    pdf.setFillColor(brand); pdf.setFont("Helvetica-Bold", 29); pdf.drawString(28, title_y - 14, format_price(property_obj))
-    pdf.setFillColor(HexColor("#637079")); pdf.setFont("Helvetica", 13); pdf.drawString(28, title_y - 40, property_location(property_obj))
+    pdf.setFillColor(white); _pdf_draw(pdf, 28, height - 48, property_obj.agency.name, "NexoraSans-Bold", 22)
+    _pdf_draw(pdf, width - 28, height - 48, format_nepal_phone(property_obj.agency.phone, nepali_digits=nepali_digits) if property_obj.agency.phone else property_obj.agency.license_number, "NexoraSans", 10, "right")
+    pdf.setFillColor(HexColor("#263238"))
+    title_y = _pdf_wrap(pdf, property_obj.title, 28, height - 468, width - 56, "NexoraSans-Bold", 27, 31, 2)
+    pdf.setFillColor(brand); _pdf_draw(pdf, 28, title_y - 14, format_price(property_obj, language, nepali_digits), "NexoraSans-Bold", 29)
+    pdf.setFillColor(HexColor("#637079")); _pdf_draw(pdf, 28, title_y - 40, property_location(property_obj, language, nepali_digits), "NexoraSans", 13)
     pdf.setFillColor(HexColor("#F1F5F3")); pdf.roundRect(28, 90, width - 56, 105, 10, stroke=0, fill=1)
     facts = [property_obj.get_property_type_display(), format_area(property_obj), f"{property_obj.bedrooms} Beds" if property_obj.bedrooms else "", f"{property_obj.road_access_value:g} {property_obj.road_access_unit} Road" if property_obj.road_access_value else ""]
-    pdf.setFillColor(HexColor("#263238")); pdf.setFont("Helvetica-Bold", 12); pdf.drawString(48, 161, "  |  ".join(filter(None, facts)))
-    pdf.setFont("Helvetica", 10); pdf.drawString(48, 138, f"Listing LP-{property_obj.id:03d} - Scan the QR code for live availability and enquiry.")
+    pdf.setFillColor(HexColor("#263238")); _pdf_draw(pdf, 48, 161, "  |  ".join(filter(None, facts)), "NexoraSans-Bold", 12)
+    listing_copy = f"लिस्टिङ LP-{property_obj.id:03d} - उपलब्धता र सोधपुछका लागि QR स्क्यान गर्नुहोस्।" if language == "ne" else f"Listing LP-{property_obj.id:03d} - Scan the QR code for live availability and enquiry."
+    _pdf_draw(pdf, 48, 138, listing_copy, "NexoraSans", 10)
     pdf.drawImage(ImageReader(io.BytesIO(qr_png(url))), width - 126, 100, 82, 82)
     pdf.setFillColor(brand); pdf.rect(0, 0, width, 64, stroke=0, fill=1)
-    pdf.setFillColor(white); pdf.setFont("Helvetica-Bold", 12); pdf.drawCentredString(width / 2, 37, "CALL OR MESSAGE THE AGENCY TO ARRANGE A VIEWING")
-    pdf.setFont("Helvetica", 9); pdf.drawCentredString(width / 2, 21, url[:90])
+    pdf.setFillColor(white); _pdf_draw(pdf, width / 2, 37, "भिजिट मिलाउन एजेन्सीलाई फोन वा सन्देश गर्नुहोस्" if language == "ne" else "CALL OR MESSAGE THE AGENCY TO ARRANGE A VIEWING", "NexoraSans-Bold", 12, "center")
+    _pdf_draw(pdf, width / 2, 21, url[:90], "NexoraSans", 9, "center")
     pdf.save(); output.seek(0)
     return output.getvalue()
 
@@ -427,7 +513,9 @@ def portal_csv(properties, request=None):
     return ("\ufeff" + output.getvalue()).encode("utf-8")
 
 
-def media_package(property_obj, url):
+def media_package(
+    property_obj, url, language="en", date_system="ad", nepali_digits=False
+):
     output = tempfile.SpooledTemporaryFile(max_size=30 * 1024 * 1024)
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for index, media in enumerate(property_obj.media.all(), 1):
@@ -449,8 +537,14 @@ def media_package(property_obj, url):
         archive.writestr("social/facebook-post.jpg", social_image(property_obj, "facebook_post", url))
         archive.writestr("social/instagram-post.jpg", social_image(property_obj, "instagram_post", url))
         archive.writestr("social/instagram-story.jpg", social_image(property_obj, "instagram_story", url))
-        archive.writestr("print/property-brochure.pdf", brochure_pdf(property_obj, url))
-        archive.writestr("print/window-card.pdf", window_card_pdf(property_obj, url))
+        archive.writestr(
+            "print/property-brochure.pdf",
+            brochure_pdf(property_obj, url, language, date_system, nepali_digits),
+        )
+        archive.writestr(
+            "print/window-card.pdf",
+            window_card_pdf(property_obj, url, language, date_system, nepali_digits),
+        )
         archive.writestr("qr/property-qr.png", qr_png(url))
         text = captions(property_obj, url)
         archive.writestr("copy/english-captions.txt", "\n\n---\n\n".join(text["english"].values()))

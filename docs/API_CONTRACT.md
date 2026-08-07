@@ -21,6 +21,7 @@ Paid, active, non-expired agencies can use protected APIs. Existing JWTs are rej
 | Method | Endpoint | Purpose |
 |---|---|---|
 | GET/PATCH | `/api/agencies/me/` | Read/update current agency branding and profile |
+| GET/POST | `/api/agencies/localization/` | Read localization defaults/current AD and BS dates, or convert a date between AD and BS |
 | GET/POST | `/api/agents/` | List/create agents |
 | GET/PATCH | `/api/agents/me/profile/` | Agent-only self-service professional profile |
 | GET/PATCH/DELETE | `/api/agents/{id}/` | Manage or deactivate an agent |

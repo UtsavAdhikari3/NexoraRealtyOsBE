@@ -1,27 +1,12 @@
-import re
-
 from django.db.models import Q
+from agencies.localization import normalize_nepal_phone
 
 from .models import Lead, LeadStatusHistory
 
 
 def normalize_phone(value):
     """Normalize Nepal phone numbers while retaining international compatibility."""
-    raw_value = (value or "").strip()
-    digits = re.sub(r"\D", "", raw_value)
-
-    if digits.startswith("00977"):
-        digits = digits[5:]
-    elif digits.startswith("977") and len(digits) > 10:
-        digits = digits[3:]
-
-    if len(digits) == 10 and digits.startswith("9"):
-        return digits
-
-    if raw_value.startswith("+") and digits:
-        return f"+{digits}"
-
-    return digits or raw_value
+    return normalize_nepal_phone(value)
 
 
 def get_or_create_public_lead(

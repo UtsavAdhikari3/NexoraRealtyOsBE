@@ -1,24 +1,18 @@
 from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
+from agencies.localization import (
+    format_localized_date, format_nepal_address, format_nepal_phone, render_message,
+)
 
 from .models import SiteVisit
 
 
 def format_property_location(property_obj):
-    parts = [
-        property_obj.neighbourhood,
-        property_obj.city,
-        property_obj.district,
-        property_obj.province,
-    ]
-
-    return ", ".join(
-        [
-            part
-            for part in parts
-            if part
-        ]
+    return format_nepal_address(
+        property_obj,
+        language=property_obj.agency.default_language,
+        nepali_digits=property_obj.agency.use_nepali_digits,
     )
 
 
@@ -46,15 +40,27 @@ def send_site_visit_scheduled_email(site_visit_id):
     agent_name = assigned_agent.full_name if assigned_agent else "our agent"
     agent_email = assigned_agent.email if assigned_agent else ""
 
-    subject = "Your site visit has been scheduled"
+    visit_date = format_localized_date(
+        site_visit.scheduled_at,
+        date_system=site_visit.agency.default_date_system,
+        language=site_visit.agency.default_language,
+        nepali_digits=site_visit.agency.use_nepali_digits,
+        include_time=True,
+    )
+    localized = render_message(
+        site_visit.agency, "site_visit_confirmation",
+        property_title=property_obj.title, visit_date=visit_date,
+        agent_phone=format_nepal_phone(assigned_agent.phone) if assigned_agent and assigned_agent.phone else "-",
+    )
+    subject = localized["subject"]
 
     message = f"""Hi {lead.full_name},
 
-Your site visit has been scheduled.
+{localized['body']}
 
 Property: {property_obj.title}
 Location: {property_location}
-Date/Time: {site_visit.scheduled_at}
+Date/Time: {visit_date}
 
 Assigned Agent: {agent_name}
 Agent Email: {agent_email}
@@ -108,15 +114,25 @@ def send_site_visit_reminder(site_visit_id):
         return False
 
     try:
+        visit_date = format_localized_date(
+            site_visit.scheduled_at,
+            date_system=site_visit.agency.default_date_system,
+            language=site_visit.agency.default_language,
+            nepali_digits=site_visit.agency.use_nepali_digits,
+            include_time=True,
+        )
+        localized = render_message(
+            site_visit.agency, "site_visit_reminder",
+            property_title=site_visit.property.title,
+            visit_date=visit_date,
+            agent_phone=format_nepal_phone(site_visit.assigned_agent.phone)
+            if site_visit.assigned_agent and site_visit.assigned_agent.phone else "-",
+        )
         send_mail(
-            subject="Reminder: your site visit is coming up",
+            subject=localized["subject"],
             message=(
                 f"Hi {site_visit.lead.full_name},\n\n"
-                f"This is a reminder for your site visit.\n"
-                f"Property: {site_visit.property.title}\n"
-                f"Date/Time: {site_visit.scheduled_at}\n"
-                f"Agent: "
-                f"{site_visit.assigned_agent.full_name if site_visit.assigned_agent else 'To be assigned'}\n"
+                f"{localized['body']}\n"
             ),
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[site_visit.lead.email],

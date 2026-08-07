@@ -4,15 +4,120 @@ from django.http import Http404
 from django.utils import timezone
 
 from rest_framework import status
+from rest_framework import serializers
 from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .serializers import TestMarkAgencyPaidSerializer
 from .serializers import AgencySerializer
 from .models import Agency
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, inline_serializer
 
 User = get_user_model()
+
+
+class LocalizationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        responses=inline_serializer(
+            name="AgencyLocalizationSettings",
+            fields={
+                "language": serializers.ChoiceField(choices=["en", "ne"]),
+                "date_system": serializers.ChoiceField(choices=["ad", "bs"]),
+                "use_nepali_digits": serializers.BooleanField(),
+                "timezone": serializers.CharField(),
+                "now": serializers.JSONField(),
+                "message_templates": serializers.JSONField(),
+            },
+        )
+    )
+    def get(self, request):
+        from django.utils import timezone
+        from .localization import (
+            format_localized_date, resolved_message_templates,
+        )
+
+        agency = request.user.agency
+        if not agency:
+            return Response(
+                {"detail": "An agency account is required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        now = timezone.now()
+        return Response({
+            "language": agency.default_language,
+            "date_system": agency.default_date_system,
+            "use_nepali_digits": agency.use_nepali_digits,
+            "timezone": agency.timezone,
+            "now": {
+                "iso": now.isoformat(),
+                "ad": format_localized_date(
+                    now, date_system="ad", language=agency.default_language,
+                    nepali_digits=agency.use_nepali_digits, include_time=True,
+                ),
+                "bs": format_localized_date(
+                    now, date_system="bs", language=agency.default_language,
+                    nepali_digits=agency.use_nepali_digits, include_time=True,
+                ),
+            },
+            "message_templates": resolved_message_templates(agency.message_templates),
+        })
+
+    @extend_schema(
+        request=inline_serializer(
+            name="AgencyDateConversionRequest",
+            fields={
+                "date": serializers.CharField(),
+                "source": serializers.ChoiceField(choices=["ad", "bs"]),
+                "target": serializers.ChoiceField(choices=["ad", "bs"]),
+                "language": serializers.ChoiceField(choices=["en", "ne"], required=False),
+                "use_nepali_digits": serializers.BooleanField(required=False),
+            },
+        ),
+        responses=inline_serializer(
+            name="AgencyDateConversionResponse",
+            fields={
+                "source": serializers.CharField(),
+                "target": serializers.CharField(),
+                "date": serializers.CharField(),
+                "display": serializers.CharField(),
+            },
+        ),
+    )
+    def post(self, request):
+        from .localization import convert_date, format_localized_date
+
+        value = request.data.get("date")
+        source = request.data.get("source", "ad")
+        target = request.data.get("target", "bs")
+        if not value or source not in {"ad", "bs"} or target not in {"ad", "bs"} or source == target:
+            return Response(
+                {"detail": "Provide a date and different ad/bs source and target systems."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            nepali_digits = request.data.get("use_nepali_digits", False)
+            if isinstance(nepali_digits, str):
+                nepali_digits = nepali_digits.strip().lower() in {"1", "true", "yes", "on"}
+            converted = convert_date(value, target=target)
+            iso = f"{converted['year']:04d}-{converted['month']:02d}-{converted['day']:02d}"
+            if target == "bs":
+                display = format_localized_date(
+                    value, date_system="bs",
+                    language=request.data.get("language", "en"),
+                    nepali_digits=bool(nepali_digits),
+                )
+            else:
+                display = format_localized_date(
+                    iso, date_system="ad",
+                    language=request.data.get("language", "en"),
+                    nepali_digits=bool(nepali_digits),
+                )
+        except (ValueError, TypeError, OverflowError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"source": source, "target": target, "date": iso, "display": display})
 
 
 class CurrentAgencyView(APIView):

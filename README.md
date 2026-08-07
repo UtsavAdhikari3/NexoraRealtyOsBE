@@ -15,6 +15,7 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
 - Site-visit scheduling, outcomes, cancellations, and reminders
 - Property view/contact conversion events and dashboard summaries
 - Listing distribution with branded social assets, watermarked media, print PDFs, QR/short links, bilingual copy, portal CSVs, and source attribution
+- Nepal localization with English/Nepali interfaces, AD/BS conversion, Nepal time, Nepali digits, lakh/crore and phone formatting, address hierarchy, editable message templates, and Unicode Nepali PDFs
 - Meta account connection plus Facebook and Instagram image publishing/scheduling
 - OpenAPI, Swagger UI, ReDoc, health checks, and request throttling
 - Contacts and owners; deals, offers, token amounts, commissions, and closing
