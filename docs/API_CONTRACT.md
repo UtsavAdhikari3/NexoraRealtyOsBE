@@ -146,7 +146,7 @@ Authenticated agency users can generate and download marketing assets for proper
 | GET/POST | `/api/properties/{id}/distribution/links/` | List or create source-tracked short links |
 | PATCH/DELETE | `/api/properties/distribution/links/{id}/` | Enable, disable, edit, or remove a tracked link |
 | GET | `/api/properties/{id}/distribution/assets/{type}/` | Download a social image, QR, PDF, CSV, watermarked ZIP, or full package |
-| POST | `/api/properties/{id}/distribution/social-draft/` | Create or immediately publish a generated Meta feed post |
+| POST | `/api/properties/{id}/distribution/social-draft/` | Create a generated Meta feed-post draft; publish it through `/api/social-posts/posts/{id}/publish/` |
 | GET | `/api/properties/distribution/portal-export/?ids=1,2` | Export selected listings in portal-ready CSV format |
 | GET | `/api/public/s/{code}/` | Count a distribution click and redirect to the public listing with attribution |
 

@@ -1,6 +1,7 @@
 import io
 import zipfile
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
@@ -146,15 +147,33 @@ class PropertyDistributionTests(APITestCase):
             access_token="test-token", status=SocialAccount.STATUS_CONNECTED,
             connected_by=self.manager,
         )
-        response = self.client.post(reverse(
-            "property-distribution-social-draft", kwargs={"property_id": self.property.id}
-        ), {"social_account": account.id, "language": "nepali"})
+        with patch("social_media.services.publishing.publish_social_post") as publish_mock:
+            response = self.client.post(reverse(
+                "property-distribution-social-draft", kwargs={"property_id": self.property.id}
+            ), {
+                "social_account": account.id,
+                "language": "nepali",
+                # Accepted for compatibility, but publishing must happen only
+                # through the dedicated social-post publish endpoint.
+                "publish_now": True,
+            })
         self.assertEqual(response.status_code, 201)
         post = SocialPost.objects.get(id=response.data["id"])
         self.assertEqual(post.property, self.property)
+        self.assertEqual(post.status, SocialPost.STATUS_DRAFT)
         self.assertIn("बिक्रीमा", post.caption)
         self.assertIn("facebook_post", post.image.name)
         self.assertTrue(post.image.name.endswith(".jpg"))
+        publish_mock.assert_not_called()
+
+    def test_social_draft_requires_a_connected_account_id(self):
+        response = self.client.post(reverse(
+            "property-distribution-social-draft",
+            kwargs={"property_id": self.property.id},
+        ), {})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("social_account", response.data)
 
     def test_inquiry_preserves_distribution_attribution_on_lead_and_event(self):
         self.client.force_authenticate(None)

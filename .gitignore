@@ -203,6 +203,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Deployment entrypoint is managed per environment.
+entrypoint.sh
+
 # Ruff stuff:
 .ruff_cache/
 
