@@ -1,0 +1,10 @@
+import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const here=path.dirname(fileURLToPath(import.meta.url));
+const root=path.basename(here)==='.qa_build'?path.dirname(here):here;
+const wb=Workbook.create();
+const s=wb.worksheets.add('Control');
+s.getRange('A1:B2').values=[['Header','Value'],['Test',1]];
+const out=await SpreadsheetFile.exportXlsx(wb);
+await out.save(path.join(root,'..','artifact_control.xlsx'));
