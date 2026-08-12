@@ -16,6 +16,7 @@ from drf_spectacular.utils import (
     extend_schema,
     extend_schema_view,
     OpenApiParameter,
+    OpenApiResponse,
 )
 from drf_spectacular.types import OpenApiTypes
 
@@ -30,6 +31,7 @@ from .serializers import (
     PropertyVerificationSerializer, PropertyVerificationDocumentSerializer,
     PropertyHistorySerializer, PropertyDuplicateFlagSerializer,
     PropertyDistributionLinkSerializer,
+    PropertyDistributionSocialDraftRequestSerializer,
 )
 from .verification import get_or_create_verification
 from .freshness import (
@@ -37,6 +39,7 @@ from .freshness import (
 )
 from django.utils import timezone
 from datetime import timedelta
+from social_media.serializers import SocialPostSerializer
 
 
 PROPERTY_FILTER_PARAMETERS = [
@@ -805,33 +808,47 @@ class PropertyPortalExportView(APIView):
 class PropertyDistributionSocialDraftView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        request=PropertyDistributionSocialDraftRequestSerializer,
+        responses={
+            201: OpenApiResponse(
+                response=SocialPostSerializer,
+                description="Generated social draft",
+            )
+        },
+        description=(
+            "Generate a branded property social draft. Publishing is intentionally "
+            "performed separately through /api/social-posts/posts/{id}/publish/."
+        ),
+    )
     def post(self, request, property_id):
         from social_media.models import SocialAccount, SocialPost
-        from social_media.serializers import SocialPostSerializer
-        from social_media.services.publishing import publish_social_post
         from .distribution import captions, canonical_property_url, social_image, tracked_url
 
+        request_serializer = PropertyDistributionSocialDraftRequestSerializer(
+            data=request.data
+        )
+        request_serializer.is_valid(raise_exception=True)
+        payload = request_serializer.validated_data
         property_obj = get_distribution_property(request, property_id)
         account = get_object_or_404(
             SocialAccount,
-            id=request.data.get("social_account"),
+            id=payload["social_account"],
             agency=request.user.agency,
             status=SocialAccount.STATUS_CONNECTED,
         )
-        asset_type = request.data.get("asset_type") or (
+        asset_type = payload.get("asset_type") or (
             "facebook_post" if account.platform == "facebook" else "instagram_post"
         )
         valid_asset = "facebook_post" if account.platform == "facebook" else "instagram_post"
         if asset_type != valid_asset:
             raise ValidationError({"asset_type": f"Use {valid_asset} for this account."})
-        language = request.data.get("language", "english")
-        if language not in {"english", "nepali"}:
-            raise ValidationError({"language": "Choose english or nepali."})
+        language = payload["language"]
         link = None
-        if request.data.get("link"):
+        if payload.get("link"):
             link = get_object_or_404(
                 PropertyDistributionLink,
-                id=request.data["link"], property=property_obj,
+                id=payload["link"], property=property_obj,
                 agency=request.user.agency, is_active=True,
             )
         url = tracked_url(link, request) if link else canonical_property_url(property_obj)
@@ -848,9 +865,6 @@ class PropertyDistributionSocialDraftView(APIView):
         )
         post.image.save(f"LP-{property_obj.id:03d}-{asset_type}.jpg", ContentFile(image_bytes), save=False)
         post.save()
-        if request.data.get("publish_now"):
-            publish_social_post(post, platforms=[account.platform])
-            post.refresh_from_db()
         return Response(
             SocialPostSerializer(post, context={"request": request}).data,
             status=status.HTTP_201_CREATED,

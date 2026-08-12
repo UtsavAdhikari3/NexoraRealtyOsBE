@@ -12,6 +12,29 @@ from .models import (
 from .area import conversion_payload, price_per_area
 
 
+class PropertyDistributionSocialDraftRequestSerializer(serializers.Serializer):
+    """Validate the generated social-draft handoff from property distribution."""
+
+    social_account = serializers.IntegerField(min_value=1)
+    language = serializers.ChoiceField(
+        choices=["english", "nepali"],
+        default="english",
+    )
+    link = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    asset_type = serializers.ChoiceField(
+        choices=["facebook_post", "instagram_post"],
+        required=False,
+    )
+    publish_now = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=(
+            "Deprecated compatibility field. This endpoint always creates a draft; "
+            "publish it through /api/social-posts/posts/{id}/publish/."
+        ),
+    )
+
+
 class PropertyMediaSerializer(serializers.ModelSerializer):
     class Meta:
         model = PropertyMedia
