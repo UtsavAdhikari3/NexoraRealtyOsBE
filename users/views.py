@@ -81,7 +81,11 @@ class RegisterView(APIView):
                     "license_number": user.agency.license_number,
                     "payment_status": user.agency.payment_status,
                     "paid_at": user.agency.paid_at,
+                    "slug": user.agency.slug,
+                    "website_onboarding_status": user.agency.website_onboarding_status,
+                    "is_website_published": user.agency.is_website_published,
                 },
+                "next_step": "payment",
             },
             status=status.HTTP_201_CREATED,
         )
@@ -96,9 +100,18 @@ def build_login_response(user):
             "license_number": user.agency.license_number,
             "payment_status": user.agency.payment_status,
             "paid_at": user.agency.paid_at,
+            "slug": user.agency.slug,
+            "website_onboarding_status": user.agency.website_onboarding_status,
+            "is_website_published": user.agency.is_website_published,
         }
     else:
         agency_data = None
+
+    needs_website_setup = bool(
+        user.agency
+        and user.role in ["agency_owner", "agency_manager"]
+        and user.agency.website_onboarding_status != "completed"
+    )
 
     return {
         "message": "Login successful",
@@ -116,6 +129,7 @@ def build_login_response(user):
         },
 
         "agency": agency_data,
+        "next_route": "/onboarding/website" if needs_website_setup else "/dashboard",
     }    
 @extend_schema(
     summary="Login",

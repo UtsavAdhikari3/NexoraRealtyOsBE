@@ -4,6 +4,14 @@ from django.utils.text import slugify
 
 
 class Agency(models.Model):
+    WEBSITE_ONBOARDING_NOT_STARTED = "not_started"
+    WEBSITE_ONBOARDING_IN_PROGRESS = "in_progress"
+    WEBSITE_ONBOARDING_COMPLETED = "completed"
+    WEBSITE_ONBOARDING_STATUS_CHOICES = [
+        (WEBSITE_ONBOARDING_NOT_STARTED, "Not started"),
+        (WEBSITE_ONBOARDING_IN_PROGRESS, "In progress"),
+        (WEBSITE_ONBOARDING_COMPLETED, "Completed"),
+    ]
     LANGUAGE_ENGLISH = "en"
     LANGUAGE_NEPALI = "ne"
     LANGUAGE_CHOICES = [
@@ -55,6 +63,15 @@ class Agency(models.Model):
     custom_domain = models.CharField(max_length=255, blank=True)
     website_template = models.CharField(max_length=80, default="luxury-agency")
     website_config = models.JSONField(default=dict, blank=True)
+    website_draft_config = models.JSONField(default=dict, blank=True)
+    website_onboarding_status = models.CharField(
+        max_length=20,
+        choices=WEBSITE_ONBOARDING_STATUS_CHOICES,
+        default=WEBSITE_ONBOARDING_NOT_STARTED,
+    )
+    website_onboarding_step = models.PositiveSmallIntegerField(default=1)
+    website_onboarding_completed_at = models.DateTimeField(null=True, blank=True)
+    website_published_at = models.DateTimeField(null=True, blank=True)
     default_language = models.CharField(
         max_length=2, choices=LANGUAGE_CHOICES, default=LANGUAGE_ENGLISH
     )

@@ -91,6 +91,7 @@ Docker Compose includes a scheduler service that runs these jobs every five minu
 - Set a strong `DJANGO_SECRET_KEY`; startup fails without one in production.
 - Set exact `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, and `CSRF_TRUSTED_ORIGINS`.
 - Set `STOREFRONT_PUBLIC_API_URL`, `STOREFRONT_DEFAULT_AGENCY_SLUG`, `STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER`, and `STOREFRONT_PUBLIC_URL` for the deployed storefront.
+- The end-to-end agency website creator, publishing rules, preview security, and deployment variables are documented in [`docs/WEBSITE_ONBOARDING.md`](docs/WEBSITE_ONBOARDING.md).
 - Configure SMTP and persistent/object media storage.
 - Configure `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and the three `STRIPE_PRICE_*` IDs. Point Stripe webhooks to `/api/webhooks/stripe/`.
 - Enable HTTPS redirect and secure cookies behind a trusted reverse proxy.

@@ -4,6 +4,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from agencies.models import Agency
+from agencies.website_onboarding import default_website_config
 from .models import AgencyUser
 
 User = get_user_model()
@@ -89,6 +90,8 @@ class RegisterSerializer(serializers.Serializer):
         agency = Agency.objects.create(
             name=validated_data["agency_name"],
             license_number=validated_data["license_number"],
+            is_website_published=False,
+            website_draft_config=default_website_config(),
         )
 
         user = User.objects.create_user(

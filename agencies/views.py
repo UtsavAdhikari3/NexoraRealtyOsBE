@@ -10,8 +10,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .serializers import TestMarkAgencyPaidSerializer
-from .serializers import AgencySerializer
+from .serializers import AgencySerializer, WebsiteOnboardingSerializer
 from .models import Agency
+from .website_onboarding import website_readiness
 from drf_spectacular.utils import extend_schema, inline_serializer
 
 User = get_user_model()
@@ -154,8 +155,116 @@ class CurrentAgencyView(APIView):
             context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        instance = serializer.save()
+        if "website_config" in serializer.validated_data:
+            instance.website_draft_config = instance.website_config
+            instance.save(update_fields=["website_draft_config"])
+        return Response(self.serializer_class(instance, context={"request": request}).data)
+
+
+class WebsiteOnboardingView(APIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebsiteOnboardingSerializer
+
+    def get_agency(self, request):
+        agency = getattr(request.user, "agency", None)
+        if not agency:
+            return None, Response(
+                {"detail": "An agency account is required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if request.user.role not in ["agency_owner", "agency_manager"]:
+            return None, Response(
+                {"detail": "Only owners or managers can configure the agency website."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return agency, None
+
+    def get(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        return Response(self.serializer_class(agency, context={"request": request}).data)
+
+    def patch(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        serializer = self.serializer_class(
+            agency,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save(
+            website_onboarding_status=Agency.WEBSITE_ONBOARDING_IN_PROGRESS,
+        )
+        return Response(self.serializer_class(instance, context={"request": request}).data)
+
+
+class WebsitePublishView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        agency = getattr(request.user, "agency", None)
+        if not agency:
+            return Response(
+                {"detail": "An agency account is required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if request.user.role not in ["agency_owner", "agency_manager"]:
+            return Response(
+                {"detail": "Only owners or managers can publish the agency website."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not agency.has_active_subscription:
+            return Response(
+                {"detail": "An active Nexora subscription is required before publishing."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        readiness = website_readiness(agency)
+        if not readiness["is_ready_to_publish"]:
+            return Response(
+                {
+                    "detail": "Complete the required website information before publishing.",
+                    **readiness,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = timezone.now()
+        agency.website_config = agency.website_draft_config
+        agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED
+        agency.website_onboarding_completed_at = now
+        agency.website_published_at = now
+        agency.is_website_published = True
+        agency.save(
+            update_fields=[
+                "website_config",
+                "website_onboarding_status",
+                "website_onboarding_completed_at",
+                "website_published_at",
+                "is_website_published",
+            ]
+        )
+        return Response(WebsiteOnboardingSerializer(agency, context={"request": request}).data)
+
+
+class WebsiteUnpublishView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        agency = getattr(request.user, "agency", None)
+        if not agency or request.user.role not in ["agency_owner", "agency_manager"]:
+            return Response(
+                {"detail": "Only agency owners or managers can unpublish the website."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        agency.is_website_published = False
+        agency.save(update_fields=["is_website_published"])
+        return Response(WebsiteOnboardingSerializer(agency, context={"request": request}).data)
 
 
 class TestMarkAgencyPaidView(APIView):

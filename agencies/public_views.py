@@ -3,6 +3,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.core import signing
 from urllib.parse import urlparse
 
 from rest_framework import generics, status
@@ -67,6 +68,27 @@ class PublicAgencyDomainDetailView(APIView):
             get_public_agencies_queryset(),
             custom_domain__iexact=domain,
         )
+        return Response(self.serializer_class(agency, context={"request": request}).data)
+
+
+class PublicAgencyPreviewView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicAgencySerializer
+
+    def get(self, request):
+        token = request.query_params.get("token", "")
+        try:
+            payload = signing.loads(
+                token,
+                salt="agency-website-preview",
+                max_age=60 * 60 * 24,
+            )
+            agency = Agency.objects.get(pk=payload["agency_id"], is_active=True)
+        except (signing.BadSignature, signing.SignatureExpired, Agency.DoesNotExist, KeyError, TypeError):
+            return Response({"detail": "This website preview link is invalid or expired."}, status=status.HTTP_404_NOT_FOUND)
+
+        agency.website_config = agency.website_draft_config or agency.website_config
         return Response(self.serializer_class(agency, context={"request": request}).data)
 
 

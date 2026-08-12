@@ -192,6 +192,20 @@ Additional endpoints:
 
 Customer endpoints live under `/api/public/agencies/{slug}/`. Register or log in under `customers/`, then send the returned token in `X-Customer-Token` for saved properties and saved searches. Public appointment availability and booking use `appointments/`. Canonical public listing lookup uses `/api/public/agencies/by-slug/{slug}/listings/{share_slug}/`.
 
+## Agency website creator
+
+Owners and managers build the public agency storefront using a separate draft configuration. A normal save never changes the live website; publishing validates readiness and copies the draft into the public configuration.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/agencies/me/website-onboarding/` | Get draft content, current step, completion, missing fields, and preview/public URLs |
+| PATCH | `/api/agencies/me/website-onboarding/` | Save profile fields, brand uploads, and `website_draft_config` |
+| POST | `/api/agencies/me/website/publish/` | Publish a complete draft for a paid agency |
+| POST | `/api/agencies/me/website/unpublish/` | Remove the site from public discovery while retaining content |
+| GET | `/api/public/agencies/website-preview/?token=...` | Return an unpublished draft for a valid 24-hour signed preview token |
+
+`website_draft_config` supports `tagline`, `hero_eyebrow`, `hero_title`, `hero_subtitle`, `mission`, `story`, `secondary_color`, `accent_color`, `services`, `statistics`, `testimonials`, and `faqs`. See `docs/WEBSITE_ONBOARDING.md` for validation and deployment configuration.
+
 ## Error behavior
 
 - `400`: validation failure

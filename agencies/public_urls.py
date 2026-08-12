@@ -5,12 +5,18 @@ from .public_views import (
     PublicAgencyDetailView,
     PublicAgencySlugDetailView,
     PublicAgencyDomainDetailView,
+    PublicAgencyPreviewView,
     PublicAgentListView,
     PublicAgentDetailView,
 )
 
 
 urlpatterns = [
+    path(
+        "agencies/website-preview/",
+        PublicAgencyPreviewView.as_view(),
+        name="public-agency-website-preview",
+    ),
     path(
         "agencies/by-slug/<slug:slug>/",
         PublicAgencySlugDetailView.as_view(),
