@@ -8,12 +8,55 @@ from django.contrib.auth import get_user_model
 
 from rest_framework import status
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from agencies.models import Agency
 from properties.models import Property
 
 
 User = get_user_model()
+
+
+class LogoutAPITestCase(APITestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(
+            name="Logout Realty",
+            license_number="LOGOUT-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.user = User.objects.create_user(
+            email="logout@nexora.com",
+            password="Password123!",
+            full_name="Logout User",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+            is_email_verified=True,
+        )
+
+    def test_logout_blacklists_refresh_token(self):
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+        response = self.client.post(reverse("logout"), {"refresh": str(refresh)}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        self.client.credentials()
+        refresh_response = self.client.post(reverse("token_refresh"), {"refresh": str(refresh)}, format="json")
+        self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_rejects_another_users_refresh_token(self):
+        other = User.objects.create_user(
+            email="other.logout@nexora.com",
+            password="Password123!",
+            full_name="Other User",
+            agency=self.agency,
+            role=User.ROLE_AGENT,
+            is_email_verified=True,
+        )
+        access = RefreshToken.for_user(self.user).access_token
+        other_refresh = RefreshToken.for_user(other)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        response = self.client.post(reverse("logout"), {"refresh": str(other_refresh)}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class AuthenticationThrottleAPITestCase(APITestCase):

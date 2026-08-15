@@ -1,7 +1,14 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.http import Http404
+from django.core.files.storage import default_storage
+from django.db import transaction
 from django.utils import timezone
+from pathlib import Path
+from uuid import uuid4
+from copy import deepcopy
+
+from PIL import Image
 
 from rest_framework import status
 from rest_framework import serializers
@@ -12,7 +19,11 @@ from rest_framework.views import APIView
 from .serializers import TestMarkAgencyPaidSerializer
 from .serializers import AgencySerializer, WebsiteOnboardingSerializer
 from .models import Agency
-from .website_onboarding import website_readiness
+from .website_onboarding import (
+    MEDIA_KEYS,
+    materialize_website_config,
+    website_readiness,
+)
 from drf_spectacular.utils import extend_schema, inline_serializer
 
 User = get_user_model()
@@ -148,6 +159,7 @@ class CurrentAgencyView(APIView):
                 {"detail": "Only owners or managers can update agency settings."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        was_completed = request.user.agency.website_onboarding_status == Agency.WEBSITE_ONBOARDING_COMPLETED
         serializer = self.serializer_class(
             request.user.agency,
             data=request.data,
@@ -156,9 +168,32 @@ class CurrentAgencyView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
-        if "website_config" in serializer.validated_data:
-            instance.website_draft_config = instance.website_config
-            instance.save(update_fields=["website_draft_config"])
+        incoming = deepcopy(serializer.validated_data.get("website_config") or instance.website_draft_config or {})
+        field_map = {
+            "about": "about", "email": "public_email", "phone": "public_phone", "address": "address",
+            "business_hours": "business_hours", "primary_color": "primary_color", "seo_title": "seo_title",
+            "seo_description": "seo_description", "facebook_url": "facebook_url", "instagram_url": "instagram_url",
+            "linkedin_url": "linkedin_url", "youtube_url": "youtube_url", "tiktok_url": "tiktok_url",
+            "whatsapp_number": "whatsapp_number", "viber_number": "viber_number", "default_language": "language",
+        }
+        for agency_field, config_field in field_map.items():
+            if agency_field in serializer.validated_data:
+                incoming[config_field] = serializer.validated_data[agency_field] or ""
+        media = dict(incoming.get("media") or {})
+        if "logo" in serializer.validated_data and instance.logo:
+            media["logo"] = instance.logo.name
+        if "cover_image" in serializer.validated_data and instance.cover_image:
+            media["hero_image"] = instance.cover_image.name
+        incoming["media"] = media
+        instance.website_draft_config = materialize_website_config(instance, incoming)
+        readiness = website_readiness(instance, instance.website_draft_config)
+        instance.website_completion_percentage = readiness["completion_percentage"]
+        instance.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED if was_completed else (
+            Agency.WEBSITE_ONBOARDING_READY if readiness["is_ready_to_publish"] else Agency.WEBSITE_ONBOARDING_IN_PROGRESS
+        )
+        instance.save(update_fields=[
+            "website_draft_config", "website_completion_percentage", "website_onboarding_status",
+        ])
         return Response(self.serializer_class(instance, context={"request": request}).data)
 
 
@@ -197,15 +232,126 @@ class WebsiteOnboardingView(APIView):
             context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
-        instance = serializer.save(
-            website_onboarding_status=Agency.WEBSITE_ONBOARDING_IN_PROGRESS,
-        )
+        instance = serializer.save()
         return Response(self.serializer_class(instance, context={"request": request}).data)
+
+
+class WebsiteValidateView(WebsiteOnboardingView):
+    def post(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        return Response(website_readiness(agency))
+
+
+class WebsiteCompleteView(WebsiteOnboardingView):
+    def post(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        readiness = website_readiness(agency)
+        if not readiness["is_ready_to_publish"]:
+            return Response(readiness, status=status.HTTP_400_BAD_REQUEST)
+        agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_READY
+        agency.website_onboarding_completed_at = timezone.now()
+        agency.website_completion_percentage = 100
+        agency.save(update_fields=[
+            "website_onboarding_status", "website_onboarding_completed_at", "website_completion_percentage",
+        ])
+        return Response(self.serializer_class(agency, context={"request": request}).data)
+
+
+class WebsitePreviewView(WebsiteOnboardingView):
+    def get(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        data = self.serializer_class(agency, context={"request": request}).data
+        return Response({"preview_url": data["preview_url"], "expires_in": 86400, "config_version": agency.website_config_version})
+
+
+class WebsiteMediaView(WebsiteOnboardingView):
+    allowed_types = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/x-icon": ".ico"}
+
+    def post(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        kind = str(request.data.get("kind", "")).strip()
+        upload = request.FILES.get("file")
+        if kind not in MEDIA_KEYS:
+            return Response({"kind": ["Choose a supported website media type."]}, status=status.HTTP_400_BAD_REQUEST)
+        if not upload:
+            return Response({"file": ["Select an image to upload."]}, status=status.HTTP_400_BAD_REQUEST)
+        if upload.size > 5 * 1024 * 1024:
+            return Response({"file": ["Images must be 5 MB or smaller."]}, status=status.HTTP_400_BAD_REQUEST)
+        content_type = getattr(upload, "content_type", "")
+        if content_type not in self.allowed_types:
+            return Response({"file": ["Upload a JPG, PNG, WebP, or ICO image."]}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            image = Image.open(upload)
+            width, height = image.size
+            image.verify()
+            upload.seek(0)
+        except Exception:
+            return Response({"file": ["The uploaded file is not a valid image."]}, status=status.HTTP_400_BAD_REQUEST)
+        minimum = (32, 32) if kind == "favicon" else ((800, 400) if kind in {"hero_image", "social_share_image"} else (64, 64))
+        if width < minimum[0] or height < minimum[1] or width > 8000 or height > 8000:
+            return Response({"file": [f"{kind.replace('_', ' ').title()} must be at least {minimum[0]}×{minimum[1]} and at most 8000×8000 pixels."]}, status=status.HTTP_400_BAD_REQUEST)
+        extension = self.allowed_types[content_type]
+        path = f"agency_websites/{agency.id}/{kind}/{uuid4().hex}{extension}"
+        saved_path = default_storage.save(path, upload)
+        config = materialize_website_config(agency)
+        previous = config["media"].get(kind)
+        if kind == "partner_logos":
+            partners = list(previous or [])
+            if len(partners) >= 12:
+                default_storage.delete(saved_path)
+                return Response({"file": ["A maximum of 12 partner logos is allowed."]}, status=status.HTTP_400_BAD_REQUEST)
+            config["media"][kind] = [*partners, saved_path]
+        else:
+            config["media"][kind] = saved_path
+        agency.website_draft_config = config
+        if agency.website_onboarding_status != Agency.WEBSITE_ONBOARDING_COMPLETED:
+            agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_IN_PROGRESS
+        agency.save(update_fields=["website_draft_config", "website_onboarding_status"])
+        published_media = (agency.website_published_config.get("media") or {}) if agency.website_published_config else {}
+        if kind != "partner_logos" and previous and previous != published_media.get(kind) and previous.startswith(f"agency_websites/{agency.id}/"):
+            default_storage.delete(previous)
+        return Response(self.serializer_class(agency, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+    def delete(self, request):
+        agency, error = self.get_agency(request)
+        if error:
+            return error
+        kind = str(request.data.get("kind", "")).strip()
+        if kind not in MEDIA_KEYS:
+            return Response({"kind": ["Choose a supported website media type."]}, status=status.HTTP_400_BAD_REQUEST)
+        config = materialize_website_config(agency)
+        previous = config["media"].get(kind)
+        if kind == "partner_logos":
+            target = str(request.data.get("path", ""))
+            if target not in (previous or []):
+                return Response({"path": ["This partner logo does not belong to the agency draft."]}, status=status.HTTP_404_NOT_FOUND)
+            config["media"][kind] = [item for item in previous if item != target]
+            previous = target
+        else:
+            config["media"][kind] = ""
+        agency.website_draft_config = config
+        if agency.website_onboarding_status != Agency.WEBSITE_ONBOARDING_COMPLETED:
+            agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_IN_PROGRESS
+        agency.save(update_fields=["website_draft_config", "website_onboarding_status"])
+        published_media = (agency.website_published_config.get("media") or {}) if agency.website_published_config else {}
+        published_values = published_media.get(kind, []) if kind == "partner_logos" else [published_media.get(kind)]
+        if previous and previous not in published_values and previous.startswith(f"agency_websites/{agency.id}/"):
+            default_storage.delete(previous)
+        return Response(self.serializer_class(agency, context={"request": request}).data)
 
 
 class WebsitePublishView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request):
         agency = getattr(request.user, "agency", None)
         if not agency:
@@ -218,6 +364,7 @@ class WebsitePublishView(APIView):
                 {"detail": "Only owners or managers can publish the agency website."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        agency = Agency.objects.select_for_update().get(pk=agency.pk)
         if not agency.has_active_subscription:
             return Response(
                 {"detail": "An active Nexora subscription is required before publishing."},
@@ -235,18 +382,28 @@ class WebsitePublishView(APIView):
             )
 
         now = timezone.now()
-        agency.website_config = agency.website_draft_config
+        published = materialize_website_config(agency)
+        agency.website_published_config = published
+        agency.website_config = published  # Legacy readers remain compatible during rollout.
+        agency.website_draft_config = deepcopy(published)
+        agency.website_draft_config["accuracy_confirmed"] = False
         agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED
         agency.website_onboarding_completed_at = now
         agency.website_published_at = now
         agency.is_website_published = True
+        agency.website_completion_percentage = 100
+        agency.website_config_version += 1
         agency.save(
             update_fields=[
                 "website_config",
+                "website_published_config",
+                "website_draft_config",
                 "website_onboarding_status",
                 "website_onboarding_completed_at",
                 "website_published_at",
                 "is_website_published",
+                "website_completion_percentage",
+                "website_config_version",
             ]
         )
         return Response(WebsiteOnboardingSerializer(agency, context={"request": request}).data)

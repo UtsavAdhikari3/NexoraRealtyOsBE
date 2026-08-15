@@ -1,9 +1,19 @@
+from io import BytesIO
+from unittest.mock import patch
+
 from django.urls import reverse
+from django.conf import settings
+from django.core import signing
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.files.storage import default_storage
+from django.utils import timezone
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from agencies.models import Agency
 from agencies.website_onboarding import default_website_config
+from properties.models import Property
 from users.models import AgencyUser
 
 
@@ -80,10 +90,51 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertIn("logo", response.data["missing_fields"])
         self.assertFalse(response.data["is_ready_to_publish"])
 
+    def test_enabled_content_page_must_have_content_before_publish(self):
+        self.complete_required_profile()
+        config = default_website_config()
+        config["hero_title"] = "A better way to find property in Nepal"
+        config["accuracy_confirmed"] = True
+        config["enabled_pages"]["services"] = True
+        self.agency.website_draft_config = config
+        self.agency.save(update_fields=["website_draft_config"])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(reverse("website-publish"))
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("services_page_content", response.data["missing_fields"])
+
+    def test_navigation_cannot_reference_a_disabled_or_removed_page(self):
+        self.client.force_authenticate(self.owner)
+        config = default_website_config()
+        config["navigation"] = [
+            {"page": "services", "label": "Services", "url": "/services"}
+        ]
+        disabled = self.client.patch(
+            reverse("website-onboarding"),
+            {"website_draft_config": config},
+            format="json",
+        )
+        self.assertEqual(disabled.status_code, status.HTTP_400_BAD_REQUEST)
+
+        config = default_website_config()
+        config["navigation"] = [
+            {"page": "portal", "label": "Portal", "url": "/portal"}
+        ]
+        legacy = self.client.patch(
+            reverse("website-onboarding"),
+            {"website_draft_config": config},
+            format="json",
+        )
+        self.assertEqual(legacy.status_code, status.HTTP_200_OK)
+        self.assertEqual(legacy.data["website_draft_config"]["navigation"], [])
+
     def test_publish_copies_draft_and_makes_site_public(self):
         self.complete_required_profile()
         config = default_website_config()
         config["hero_title"] = "A better way to find property in Nepal"
+        config["accuracy_confirmed"] = True
         self.agency.website_draft_config = config
         self.agency.save(update_fields=["website_draft_config"])
         self.client.force_authenticate(self.owner)
@@ -92,7 +143,9 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.agency.refresh_from_db()
         self.assertTrue(self.agency.is_website_published)
-        self.assertEqual(self.agency.website_config, config)
+        self.assertEqual(self.agency.website_published_config["hero_title"], config["hero_title"])
+        self.assertEqual(self.agency.website_config, self.agency.website_published_config)
+        self.assertEqual(self.agency.website_config_version, 1)
         self.assertEqual(self.agency.website_onboarding_status, Agency.WEBSITE_ONBOARDING_COMPLETED)
 
         public = self.client.get(
@@ -106,8 +159,9 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         published = default_website_config()
         published["hero_title"] = "The currently published headline"
         self.agency.website_config = published
+        self.agency.website_published_config = published
         self.agency.is_website_published = True
-        self.agency.save(update_fields=["website_config", "is_website_published"])
+        self.agency.save(update_fields=["website_config", "website_published_config", "is_website_published"])
         self.client.force_authenticate(self.owner)
 
         draft = default_website_config()
@@ -136,7 +190,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.agency.refresh_from_db()
         self.assertFalse(self.agency.is_website_published)
-        self.assertTrue(self.agency.website_draft_config["hero_title"])
+        self.assertEqual(self.agency.website_draft_config["schema_version"], 2)
         public = self.client.get(
             reverse("public-agency-detail-by-slug", kwargs={"slug": self.agency.slug})
         )
@@ -176,6 +230,137 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         response = self.client.get(reverse("public-agency-website-preview"), {"token": "invalid"})
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_expired_preview_token_is_rejected(self):
+        with patch("agencies.public_views.signing.loads", side_effect=signing.SignatureExpired):
+            response = self.client.get(reverse("public-agency-website-preview"), {"token": "expired"})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_media_upload_validates_image_and_uses_tenant_storage(self):
+        self.client.force_authenticate(self.owner)
+        buffer = BytesIO()
+        Image.new("RGB", (96, 96), "#496B5A").save(buffer, format="PNG")
+        upload = SimpleUploadedFile("unsafe agency logo.png", buffer.getvalue(), content_type="image/png")
+
+        response = self.client.post(
+            reverse("website-onboarding-media"),
+            {"kind": "logo", "file": upload},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        path = response.data["website_draft_config"]["media"]["logo"]
+        self.assertTrue(path.startswith(f"agency_websites/{self.agency.id}/logo/"))
+        self.assertNotIn("unsafe agency logo", path)
+        self.assertTrue(response.data["media_urls"]["logo"].startswith(settings.PUBLIC_API_BASE_URL))
+        default_storage.delete(path)
+
+    def test_media_upload_rejects_spoofed_non_image(self):
+        self.client.force_authenticate(self.owner)
+        upload = SimpleUploadedFile("not-an-image.png", b"not really a png", content_type="image/png")
+        response = self.client.post(
+            reverse("website-onboarding-media"),
+            {"kind": "logo", "file": upload},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("file", response.data)
+
+    def test_public_api_returns_only_published_branding_socials_and_absolute_media(self):
+        published = default_website_config()
+        published.update({
+            "hero_title": "Published headline",
+            "primary_color": "#112233",
+            "facebook_url": "https://facebook.com/published-agency",
+            "instagram_url": "https://instagram.com/published-agency",
+        })
+        published["media"]["logo"] = "agency_websites/1/logo/published.png"
+        draft = {**published, "hero_title": "Secret draft headline", "facebook_url": "https://facebook.com/draft-only"}
+        self.agency.website_published_config = published
+        self.agency.website_config = published
+        self.agency.website_draft_config = draft
+        self.agency.is_website_published = True
+        self.agency.save(update_fields=["website_published_config", "website_config", "website_draft_config", "is_website_published"])
+
+        response = self.client.get(reverse("public-agency-detail-by-slug", kwargs={"slug": self.agency.slug}))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["website_config"]["hero_title"], "Published headline")
+        self.assertEqual(response.data["facebook_url"], "https://facebook.com/published-agency")
+        self.assertEqual(response.data["primary_color"], "#112233")
+        self.assertTrue(response.data["logo"].startswith(f"{settings.PUBLIC_API_BASE_URL.rstrip('/')}/media/"))
+        self.assertNotContains(response, "Secret draft headline")
+
+    def test_two_public_agencies_never_share_brand_or_social_configuration(self):
+        first = default_website_config()
+        first.update({"hero_title": "First agency", "primary_color": "#112233", "facebook_url": "https://facebook.com/first"})
+        second = default_website_config()
+        second.update({"hero_title": "Second agency", "primary_color": "#AABBCC", "facebook_url": "https://facebook.com/second"})
+        self.agency.website_published_config = first
+        self.agency.is_website_published = True
+        self.agency.save(update_fields=["website_published_config", "is_website_published"])
+        other = Agency.objects.create(name="Other Realty", license_number="OTHER-002", slug="other-realty", payment_status=Agency.PAYMENT_PAID, is_website_published=True, website_published_config=second)
+
+        first_response = self.client.get(reverse("public-agency-detail-by-slug", kwargs={"slug": self.agency.slug}))
+        second_response = self.client.get(reverse("public-agency-detail-by-slug", kwargs={"slug": other.slug}))
+
+        self.assertEqual(first_response.data["website_config"]["hero_title"], "First agency")
+        self.assertEqual(second_response.data["website_config"]["hero_title"], "Second agency")
+        self.assertNotEqual(first_response.data["facebook_url"], second_response.data["facebook_url"])
+
+    def test_unknown_and_unowned_website_configuration_is_rejected(self):
+        self.client.force_authenticate(self.owner)
+        config = default_website_config()
+        config["unsupported_script"] = "<script>alert(1)</script>"
+        response = self.client.patch(reverse("website-onboarding"), {"website_draft_config": config}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        config = default_website_config()
+        config["media"]["logo"] = "agency_websites/999/logo/stolen.png"
+        response = self.client.patch(reverse("website-onboarding"), {"website_draft_config": config}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_manual_featured_properties_are_tenant_scoped_and_current(self):
+        eligible = Property.objects.create(
+            agency=self.agency,
+            assigned_agent=self.agent,
+            title="Current public home",
+            property_type="house",
+            purpose="sale",
+            price=12000000,
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            status="available",
+            is_published=True,
+        )
+        other_agency = Agency.objects.create(name="Other listings", license_number="OTHER-LISTINGS")
+        other = Property.objects.create(
+            agency=other_agency,
+            title="Another agency home",
+            property_type="house",
+            purpose="sale",
+            price=10000000,
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            status="available",
+            is_published=True,
+        )
+        self.client.force_authenticate(self.owner)
+        config = default_website_config()
+        config.update({"featured_property_mode": "manual", "featured_property_ids": [eligible.id]})
+        valid = self.client.patch(reverse("website-onboarding"), {"website_draft_config": config}, format="json")
+        self.assertEqual(valid.status_code, status.HTTP_200_OK)
+        self.assertEqual(valid.data["website_draft_config"]["featured_property_ids"], [eligible.id])
+
+        config["featured_property_ids"] = [other.id]
+        cross_tenant = self.client.patch(reverse("website-onboarding"), {"website_draft_config": config}, format="json")
+        self.assertEqual(cross_tenant.status_code, status.HTTP_400_BAD_REQUEST)
+
+        Property.objects.filter(pk=eligible.pk).update(listing_expires_at=timezone.now())
+        config["featured_property_ids"] = [eligible.id]
+        expired = self.client.patch(reverse("website-onboarding"), {"website_draft_config": config}, format="json")
+        self.assertEqual(expired.status_code, status.HTTP_400_BAD_REQUEST)
 
 class WebsiteRegistrationDefaultsAPITestCase(APITestCase):
     def test_registration_creates_an_unpublished_website_draft(self):
@@ -194,5 +379,5 @@ class WebsiteRegistrationDefaultsAPITestCase(APITestCase):
         agency = Agency.objects.get(license_number="NEW-WEBSITE-001")
         self.assertFalse(agency.is_website_published)
         self.assertEqual(agency.website_onboarding_status, Agency.WEBSITE_ONBOARDING_NOT_STARTED)
-        self.assertTrue(agency.website_draft_config["hero_title"])
+        self.assertEqual(agency.website_draft_config["schema_version"], 2)
         self.assertEqual(response.data["next_step"], "payment")

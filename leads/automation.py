@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import timedelta
 
@@ -17,6 +18,18 @@ ACTIVE_STATUSES = {
     "new", "contacted", "interested", "site_visit_scheduled",
     "site_visit_completed", "negotiating", "token_booking", "follow_up_later",
 }
+
+logger = logging.getLogger(__name__)
+
+
+def _active_statuses(agency):
+    """Return built-in and agency-defined open lead stages."""
+    from operations.models import PipelineStage
+
+    custom = PipelineStage.objects.filter(
+        agency=agency, module="lead", is_closed=False,
+    ).values_list("key", flat=True)
+    return ACTIVE_STATUSES | set(custom)
 
 
 def get_automation_settings(agency):
@@ -47,7 +60,10 @@ def _notify(users, *, agency, title, message, lead):
 
 
 def _active_count(agent, exclude_lead=None):
-    queryset = Lead.objects.filter(assigned_agent=agent, status__in=ACTIVE_STATUSES)
+    queryset = Lead.objects.filter(
+        assigned_agent=agent,
+        status__in=_active_statuses(agent.agency),
+    )
     if exclude_lead:
         queryset = queryset.exclude(pk=exclude_lead.pk)
     return queryset.count()
@@ -171,6 +187,7 @@ def stamp_assignment(
 
 @transaction.atomic
 def apply_lead_automation(lead, property_obj=None, force=False):
+    lead = Lead.objects.select_for_update().select_related("agency").get(pk=lead.pk)
     settings = get_automation_settings(lead.agency)
     settings = LeadAutomationSettings.objects.select_for_update().get(pk=settings.pk)
     if not settings.is_enabled:
@@ -187,17 +204,19 @@ def apply_lead_automation(lead, property_obj=None, force=False):
     agent = None
     for rule in LeadAssignmentRule.objects.filter(
         agency=lead.agency, is_active=True
-    ).select_related("assign_to_agent", "match_property"):
+    ).select_related("assign_to_agent", "match_property").order_by("priority", "id"):
         if not _rule_matches(rule, lead, property_obj):
             continue
-        candidate = _agent_for_method(
+        matched_rule = rule
+        agent = _agent_for_method(
             rule.assignment_method, settings, property_obj, rule=rule, lead=lead
         )
-        if candidate:
-            matched_rule, agent = rule, candidate
-            break
+        # The highest-priority matching rule owns the decision. If it cannot
+        # assign, use the configured fallback rather than a lower-priority rule.
+        break
 
     if not agent and settings.fallback_assignment != "unassigned":
+        matched_rule = None
         agent = _agent_for_method(
             settings.fallback_assignment, settings, property_obj, lead=lead
         )
@@ -251,7 +270,7 @@ def _normalized_phone(value):
 def detect_duplicate_leads(lead):
     candidates = Lead.objects.filter(agency=lead.agency).exclude(pk=lead.pk).exclude(
         status="archived"
-    )[:500]
+    ).order_by("id")[:500]
     detected = []
     phone = _normalized_phone(lead.phone)
     email = (lead.email or "").lower().strip()
@@ -300,72 +319,88 @@ def detect_duplicate_leads(lead):
     return detected
 
 
+@transaction.atomic
+def _process_one_lead(lead_id, now):
+    """Process one lead under row locks so concurrent schedulers are harmless."""
+    lead = Lead.objects.select_for_update().select_related("agency").get(pk=lead_id)
+    settings = LeadAutomationSettings.objects.select_for_update().filter(
+        agency=lead.agency
+    ).first()
+    if not settings:
+        settings = get_automation_settings(lead.agency)
+        settings = LeadAutomationSettings.objects.select_for_update().get(pk=settings.pk)
+
+    counts = {"escalated": 0, "alerts": 0, "reassigned": 0}
+    if (
+        not settings.is_enabled
+        or not lead.assigned_agent_id
+        or lead.status not in _active_statuses(lead.agency)
+    ):
+        return counts
+
+    assigned_at = lead.assigned_at or lead.created_at
+    activity_at = lead.last_agent_activity_at or assigned_at
+    inactive_assignee = not lead.assigned_agent.is_active
+
+    escalation_at = assigned_at + timedelta(minutes=settings.escalation_minutes)
+    if not lead.assignment_responded_at and not lead.escalated_at and now >= escalation_at:
+        lead.escalated_at = now
+        lead.save(update_fields=["escalated_at", "updated_at"])
+        users = list(_managers(lead.agency)) + [lead.assigned_agent]
+        _notify(
+            users, agency=lead.agency, title="Lead response SLA missed",
+            message=f"{lead.assigned_agent.full_name} has not responded to {lead.full_name}",
+            lead=lead,
+        )
+        LeadAutomationEvent.objects.create(
+            agency=lead.agency, lead=lead, event_type="escalated",
+            from_agent=lead.assigned_agent,
+            summary="Lead escalated after missed response SLA",
+        )
+        counts["escalated"] += 1
+
+    alert_at = activity_at + timedelta(hours=settings.manager_alert_hours)
+    if not lead.neglect_alerted_at and now >= alert_at:
+        lead.neglect_alerted_at = now
+        lead.save(update_fields=["neglect_alerted_at", "updated_at"])
+        _notify(
+            _managers(lead.agency), agency=lead.agency,
+            title="Neglected lead alert",
+            message=f"No recent agent activity for {lead.full_name}", lead=lead,
+        )
+        LeadAutomationEvent.objects.create(
+            agency=lead.agency, lead=lead, event_type="neglect_alert",
+            from_agent=lead.assigned_agent,
+            summary="Manager alerted about neglected lead",
+        )
+        counts["alerts"] += 1
+
+    reassign_at = activity_at + timedelta(hours=settings.inactive_reassign_hours)
+    if settings.auto_reassign_inactive and (inactive_assignee or now >= reassign_at):
+        replacement = _round_robin_agent(
+            settings, exclude_agent=lead.assigned_agent, lead=lead
+        )
+        if replacement:
+            stamp_assignment(lead, replacement, settings, reassignment=True)
+            counts["reassigned"] += 1
+    return counts
+
+
 def process_lead_automation(now=None, agency=None):
     now = now or timezone.now()
     counts = {"escalated": 0, "alerts": 0, "reassigned": 0}
     leads = Lead.objects.filter(
-        status__in=ACTIVE_STATUSES,
         assigned_agent__isnull=False,
         agency__is_active=True,
-    ).select_related("agency", "assigned_agent")
+    ).exclude(status__in=["won", "lost", "archived"])
     if agency is not None:
         leads = leads.filter(agency=agency)
-    settings_cache = {}
-    for lead in leads:
-        settings = settings_cache.get(lead.agency_id)
-        if settings is None:
-            settings = get_automation_settings(lead.agency)
-            settings_cache[lead.agency_id] = settings
-        if not settings.is_enabled:
+    for lead_id in leads.order_by("id").values_list("id", flat=True).iterator():
+        try:
+            result = _process_one_lead(lead_id, now)
+        except Exception:
+            logger.exception("Lead automation failed for lead %s", lead_id)
             continue
-        assigned_at = lead.assigned_at or lead.created_at
-        activity_at = lead.last_agent_activity_at or assigned_at
-
-        escalation_at = assigned_at + timedelta(minutes=settings.escalation_minutes)
-        if not lead.assignment_responded_at and not lead.escalated_at and now >= escalation_at:
-            lead.escalated_at = now
-            lead.save(update_fields=["escalated_at", "updated_at"])
-            users = list(_managers(lead.agency)) + [lead.assigned_agent]
-            _notify(
-                users, agency=lead.agency, title="Lead response SLA missed",
-                message=f"{lead.assigned_agent.full_name} has not responded to {lead.full_name}",
-                lead=lead,
-            )
-            LeadAutomationEvent.objects.create(
-                agency=lead.agency, lead=lead, event_type="escalated",
-                from_agent=lead.assigned_agent,
-                summary="Lead escalated after missed response SLA",
-            )
-            counts["escalated"] += 1
-
-        alert_at = activity_at + timedelta(hours=settings.manager_alert_hours)
-        if not lead.neglect_alerted_at and now >= alert_at:
-            lead.neglect_alerted_at = now
-            lead.save(update_fields=["neglect_alerted_at", "updated_at"])
-            _notify(
-                _managers(lead.agency), agency=lead.agency,
-                title="Neglected lead alert",
-                message=f"No recent agent activity for {lead.full_name}", lead=lead,
-            )
-            LeadAutomationEvent.objects.create(
-                agency=lead.agency, lead=lead, event_type="neglect_alert",
-                from_agent=lead.assigned_agent,
-                summary="Manager alerted about neglected lead",
-            )
-            counts["alerts"] += 1
-
-        reassign_at = activity_at + timedelta(hours=settings.inactive_reassign_hours)
-        if settings.auto_reassign_inactive and now >= reassign_at:
-            with transaction.atomic():
-                locked_settings = LeadAutomationSettings.objects.select_for_update().get(
-                    pk=settings.pk
-                )
-                replacement = _round_robin_agent(
-                    locked_settings, exclude_agent=lead.assigned_agent, lead=lead
-                )
-                if replacement:
-                    stamp_assignment(
-                        lead, replacement, locked_settings, reassignment=True
-                    )
-                    counts["reassigned"] += 1
+        for key in counts:
+            counts[key] += result[key]
     return counts

@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.urls import reverse
 from django.utils import timezone
+from django.core.cache import cache
 from rest_framework.test import APITestCase
 
 from agencies.models import Agency
@@ -13,6 +14,8 @@ from .models import Property, PropertyDuplicateFlag, PropertyHistory
 
 class ListingFreshnessAPITests(APITestCase):
     def setUp(self):
+        # Public endpoints share IP-based throttle buckets; isolate each API test.
+        cache.clear()
         self.agency = Agency.objects.create(
             name="Fresh Realty", license_number="FRESH-001", payment_status="paid",
             is_website_published=True,

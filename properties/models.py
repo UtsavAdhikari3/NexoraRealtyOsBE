@@ -571,6 +571,8 @@ class PropertyHistory(models.Model):
         ("republish_approved", "Republish Approved"), ("republish_rejected", "Republish Rejected"),
         ("withdrawn", "Withdrawn"), ("duplicate_flagged", "Duplicate Flagged"),
         ("report_received", "Public Report Received"),
+        ("verification_changed", "Verification Changed"),
+        ("document_changed", "Verification Document Changed"),
     ]
     agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_history")
     property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="history")

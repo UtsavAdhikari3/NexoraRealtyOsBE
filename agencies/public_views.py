@@ -88,7 +88,7 @@ class PublicAgencyPreviewView(APIView):
         except (signing.BadSignature, signing.SignatureExpired, Agency.DoesNotExist, KeyError, TypeError):
             return Response({"detail": "This website preview link is invalid or expired."}, status=status.HTTP_404_NOT_FOUND)
 
-        agency.website_config = agency.website_draft_config or agency.website_config
+        agency.website_published_config = agency.website_draft_config or agency.website_published_config or agency.website_config
         return Response(self.serializer_class(agency, context={"request": request}).data)
 
 

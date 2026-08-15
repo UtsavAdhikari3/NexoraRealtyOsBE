@@ -13,6 +13,7 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.permissions import IsAuthenticated
@@ -35,6 +36,24 @@ from .emails import send_login_verification_otp
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(request={"application/json": {"type": "object", "properties": {"refresh": {"type": "string"}}, "required": ["refresh"]}}, responses={204: None})
+    def post(self, request):
+        raw_refresh = request.data.get("refresh")
+        if not raw_refresh:
+            return Response({"refresh": "Refresh token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            refresh = RefreshToken(raw_refresh)
+            if str(refresh.get("user_id")) != str(request.user.pk):
+                return Response({"refresh": "Refresh token does not belong to the authenticated user."}, status=status.HTTP_400_BAD_REQUEST)
+            refresh.blacklist()
+        except TokenError:
+            return Response({"refresh": "Refresh token is invalid or already revoked."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 @extend_schema(
     summary="Register Agency",
@@ -83,7 +102,9 @@ class RegisterView(APIView):
                     "paid_at": user.agency.paid_at,
                     "slug": user.agency.slug,
                     "website_onboarding_status": user.agency.website_onboarding_status,
+                    "website_status": user.agency.website_onboarding_status,
                     "is_website_published": user.agency.is_website_published,
+                    "website_url": f"{settings.STOREFRONT_PUBLIC_URL.rstrip('/')}/agency/{user.agency.slug}",
                 },
                 "next_step": "payment",
             },

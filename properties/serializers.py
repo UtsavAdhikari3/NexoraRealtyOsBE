@@ -153,6 +153,17 @@ class PropertyVerificationDocumentSerializer(serializers.ModelSerializer):
         expiry = attrs.get("expiry_date", getattr(self.instance, "expiry_date", None))
         if issued and expiry and expiry < issued:
             raise serializers.ValidationError({"expiry_date": "Expiry date cannot be before issued date."})
+        status_value = attrs.get("status", getattr(self.instance, "status", "missing"))
+        file_value = attrs.get("file", getattr(self.instance, "file", None))
+        external_url = attrs.get(
+            "external_url", getattr(self.instance, "external_url", "")
+        )
+        if status_value in {"received", "under_review", "approved", "rejected"} and not (
+            file_value or external_url
+        ):
+            raise serializers.ValidationError({
+                "status": "Upload a document or provide its URL before changing this status."
+            })
         return attrs
 
     def update(self, instance, validated_data):
@@ -448,6 +459,16 @@ class PropertySerializer(serializers.ModelSerializer):
                     )
                 }
             )
+
+        if is_published and self.instance:
+            if self.instance.requires_republish_approval:
+                raise serializers.ValidationError({
+                    "is_published": "Manager approval is required before this listing can be republished."
+                })
+            if self.instance.listing_expires_at and self.instance.listing_expires_at <= timezone.now():
+                raise serializers.ValidationError({
+                    "is_published": "Confirm listing availability before republishing an expired listing."
+                })
 
         withdrawal_reason = attrs.get(
             "withdrawal_reason", getattr(self.instance, "withdrawal_reason", "") if self.instance else ""

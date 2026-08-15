@@ -632,3 +632,6 @@ class SocialAccountDisconnectView(APIView):
         return Response({
             "detail": "Social account disconnected.",
         })
+
+    def delete(self, request, pk):
+        return self.post(request, pk)

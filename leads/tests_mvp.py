@@ -50,6 +50,28 @@ class LeadWorkflowMVPAPITestCase(APITestCase):
             lead=self.lead,
             property=self.property,
         )
+        self.other_owner = AgencyUser.objects.create_user(
+            email="other-crm-owner@example.com",
+            password="Password123",
+            full_name="Other Owner",
+            agency=self.other_agency,
+            role=AgencyUser.ROLE_AGENCY_OWNER,
+        )
+        self.other_lead = Lead.objects.create(
+            agency=self.other_agency,
+            full_name="Other Buyer",
+            phone="9822222222",
+        )
+        self.other_property = Property.objects.create(
+            agency=self.other_agency,
+            title="Other Property",
+            property_type="land",
+            purpose="sale",
+            price="5000000",
+            province="Bagmati",
+            district="Bhaktapur",
+            city="Bhaktapur",
+        )
 
     def test_interest_detail_uses_interest_queryset(self):
         self.client.force_authenticate(user=self.agent)
@@ -96,3 +118,19 @@ class LeadWorkflowMVPAPITestCase(APITestCase):
                 to_status="lost",
             ).exists()
         )
+
+    def test_lead_detail_is_tenant_scoped(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get(
+            reverse("lead-detail", kwargs={"pk": self.other_lead.id})
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_interest_rejects_property_from_another_agency(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            reverse("lead-property-interest-list", kwargs={"lead_id": self.lead.id}),
+            {"property": self.other_property.id, "interest_level": "medium"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

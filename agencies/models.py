@@ -6,10 +6,12 @@ from django.utils.text import slugify
 class Agency(models.Model):
     WEBSITE_ONBOARDING_NOT_STARTED = "not_started"
     WEBSITE_ONBOARDING_IN_PROGRESS = "in_progress"
+    WEBSITE_ONBOARDING_READY = "ready"
     WEBSITE_ONBOARDING_COMPLETED = "completed"
     WEBSITE_ONBOARDING_STATUS_CHOICES = [
         (WEBSITE_ONBOARDING_NOT_STARTED, "Not started"),
         (WEBSITE_ONBOARDING_IN_PROGRESS, "In progress"),
+        (WEBSITE_ONBOARDING_READY, "Ready to publish"),
         (WEBSITE_ONBOARDING_COMPLETED, "Completed"),
     ]
     LANGUAGE_ENGLISH = "en"
@@ -64,12 +66,15 @@ class Agency(models.Model):
     website_template = models.CharField(max_length=80, default="luxury-agency")
     website_config = models.JSONField(default=dict, blank=True)
     website_draft_config = models.JSONField(default=dict, blank=True)
+    website_published_config = models.JSONField(default=dict, blank=True)
     website_onboarding_status = models.CharField(
         max_length=20,
         choices=WEBSITE_ONBOARDING_STATUS_CHOICES,
         default=WEBSITE_ONBOARDING_NOT_STARTED,
     )
     website_onboarding_step = models.PositiveSmallIntegerField(default=1)
+    website_completion_percentage = models.PositiveSmallIntegerField(default=0)
+    website_config_version = models.PositiveIntegerField(default=0)
     website_onboarding_completed_at = models.DateTimeField(null=True, blank=True)
     website_published_at = models.DateTimeField(null=True, blank=True)
     default_language = models.CharField(
@@ -81,6 +86,9 @@ class Agency(models.Model):
     use_nepali_digits = models.BooleanField(default=False)
     timezone = models.CharField(max_length=50, default="Asia/Kathmandu")
     message_templates = models.JSONField(default=dict, blank=True)
+    # Keep programmatic/admin-created agencies backward compatible. The public
+    # registration flow explicitly creates agencies as unpublished until their
+    # onboarding checklist is complete.
     is_website_published = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     subscription_expires_at = models.DateTimeField(null=True, blank=True)

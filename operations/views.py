@@ -26,6 +26,7 @@ from leads.models import Lead, LeadInteraction
 from leads.services import get_or_create_public_lead
 from properties.models import Property
 from users.models import AgencyUser
+from users.permissions import IsAgencyOwnerOrManagerOrReadOnly
 from .models import (
     AgentReview, Appointment, AppointmentAvailability, AuditLog, Contact, CustomerProfile,
     CustomFieldDefinition, Deal, Document, Invitation, Lease, Notification,
@@ -44,6 +45,8 @@ from .serializers import (
     TeamMemberSerializer,
     PlatformAgencySerializer,
 )
+from .task_recurrence import create_next_task_occurrence
+from .validators import custom_field_in_use, pipeline_stage_in_use
 
 
 MANAGER_ROLES = {AgencyUser.ROLE_AGENCY_OWNER, AgencyUser.ROLE_AGENCY_MANAGER, AgencyUser.ROLE_SUPER_ADMIN}
@@ -311,7 +314,13 @@ class TaskViewSet(AgencyModelViewSet):
         instance = serializer.save(agency=self.request.user.agency, created_by=self.request.user, assigned_to=assigned)
         create_audit(self.request, instance, "created")
         if assigned != self.request.user:
-            Notification.objects.create(agency=instance.agency, user=assigned, title="New task", message=instance.title, category="task", link="/tasks")
+            Notification.objects.create(agency=instance.agency, user=assigned, title="New task", message=instance.title, category="task", link=f"/tasks?task={instance.id}")
+        create_next_task_occurrence(instance)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        create_audit(self.request, instance, "updated")
+        create_next_task_occurrence(instance)
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -423,21 +432,37 @@ class PlatformAgencyViewSet(
 class CustomFieldViewSet(AgencyModelViewSet):
     queryset = CustomFieldDefinition.objects.all()
     serializer_class = CustomFieldDefinitionSerializer
+    permission_classes = [IsAuthenticated, IsAgencyOwnerOrManagerOrReadOnly]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         module = self.request.query_params.get("module")
         return queryset.filter(module=module) if module else queryset
+
+    def perform_destroy(self, instance):
+        if custom_field_in_use(instance):
+            raise ValidationError({
+                "detail": "This field is in use. Deactivate it to preserve existing record values."
+            })
+        super().perform_destroy(instance)
 
 
 class PipelineStageViewSet(AgencyModelViewSet):
     queryset = PipelineStage.objects.all()
     serializer_class = PipelineStageSerializer
+    permission_classes = [IsAuthenticated, IsAgencyOwnerOrManagerOrReadOnly]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         module = self.request.query_params.get("module")
         return queryset.filter(module=module) if module else queryset
+
+    def perform_destroy(self, instance):
+        if pipeline_stage_in_use(instance):
+            raise ValidationError({
+                "detail": "This stage is in use. Move its records to another stage before deleting it."
+            })
+        super().perform_destroy(instance)
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -811,10 +836,34 @@ def customer_saved_searches(request, slug):
     customer = customer_from_request(request, agency)
     if request.method == "GET":
         return Response(SavedSearchSerializer(customer.saved_searches.all(), many=True).data)
-    serializer = SavedSearchSerializer(data=request.data)
+    serializer = SavedSearchSerializer(data=request.data, context={"customer": customer})
     serializer.is_valid(raise_exception=True)
     saved = serializer.save(agency=agency, customer=customer)
     return Response(SavedSearchSerializer(saved).data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(request=SavedSearchSerializer, responses=SavedSearchSerializer)
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([AllowAny])
+def customer_saved_search_detail(request, slug, saved_search_id):
+    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    customer = customer_from_request(request, agency)
+    saved = get_object_or_404(customer.saved_searches.all(), pk=saved_search_id)
+    if request.method == "GET":
+        return Response(SavedSearchSerializer(saved).data)
+    if request.method == "DELETE":
+        saved.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    serializer = SavedSearchSerializer(
+        saved,
+        data=request.data,
+        partial=True,
+        context={"customer": customer},
+    )
+    serializer.is_valid(raise_exception=True)
+    filters_changed = "filters" in serializer.validated_data and serializer.validated_data["filters"] != saved.filters
+    saved = serializer.save(last_notified_at=None if filters_changed else saved.last_notified_at)
+    return Response(SavedSearchSerializer(saved).data)
 
 
 @extend_schema(request=AppointmentSerializer, responses=AppointmentSerializer(many=True))
@@ -839,7 +888,7 @@ def public_appointments(request, slug):
         customer = customer_from_request(request, agency)
     appointment = serializer.save(agency=agency, customer=customer)
     if appointment.agent:
-        Notification.objects.create(agency=agency, user=appointment.agent, title="Appointment requested", message=f"{appointment.full_name} requested {appointment.starts_at:%Y-%m-%d %H:%M}", category="appointment", link="/appointments")
+        Notification.objects.create(agency=agency, user=appointment.agent, title="Appointment requested", message=f"{appointment.full_name} requested {appointment.starts_at:%Y-%m-%d %H:%M}", category="appointment", link=f"/appointments?appointment={appointment.id}")
     return Response(AppointmentSerializer(appointment).data, status=status.HTTP_201_CREATED)
 
 

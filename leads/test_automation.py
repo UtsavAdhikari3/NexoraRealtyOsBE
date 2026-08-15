@@ -79,6 +79,35 @@ class LeadAutomationTests(APITestCase):
         lead.refresh_from_db()
         self.assertEqual(lead.assigned_agent, self.agent_two)
 
+    def test_highest_matching_rule_uses_fallback_when_its_agent_is_at_capacity(self):
+        self.settings.fallback_assignment = "round_robin"
+        self.settings.max_active_leads_per_agent = 1
+        self.settings.save()
+        self.make_lead(
+            name="Existing assignment", phone="9800000040",
+            assigned_agent=self.agent_one,
+        )
+        highest = LeadAssignmentRule.objects.create(
+            agency=self.agency, name="Primary", priority=1,
+            match_location="Kathmandu", assignment_method="specific_agent",
+            assign_to_agent=self.agent_one,
+        )
+        LeadAssignmentRule.objects.create(
+            agency=self.agency, name="Lower priority", priority=2,
+            match_location="Kathmandu", assignment_method="specific_agent",
+            assign_to_agent=self.agent_two,
+        )
+        lead = self.make_lead(
+            name="Capacity fallback", phone="9800000041",
+            preferred_location="Kathmandu",
+        )
+        apply_lead_automation(lead)
+        lead.refresh_from_db()
+        event = LeadAutomationEvent.objects.get(lead=lead, event_type="assigned")
+        self.assertEqual(lead.assigned_agent, self.agent_two)
+        self.assertIsNone(event.rule)
+        self.assertNotEqual(event.rule_id, highest.id)
+
     def test_round_robin_respects_capacity(self):
         self.settings.fallback_assignment = "round_robin"
         self.settings.max_active_leads_per_agent = 1
@@ -139,6 +168,16 @@ class LeadAutomationTests(APITestCase):
         self.assertTrue(Notification.objects.filter(
             user=self.manager, title="Lead response SLA missed"
         ).exists())
+        second_counts = process_lead_automation(now=timezone.now(), agency=self.agency)
+        self.assertEqual(second_counts, {"escalated": 0, "alerts": 0, "reassigned": 0})
+
+    def test_inactive_listing_agent_never_receives_new_lead(self):
+        self.agent_one.is_active = False
+        self.agent_one.save(update_fields=["is_active"])
+        lead = self.make_lead(name="Active agent only", phone="9800000042")
+        apply_lead_automation(lead, self.property)
+        lead.refresh_from_db()
+        self.assertEqual(lead.assigned_agent, self.agent_two)
 
     def test_manager_can_configure_rules_but_agent_cannot(self):
         response = self.client.post(reverse("lead-automation-rules"), {

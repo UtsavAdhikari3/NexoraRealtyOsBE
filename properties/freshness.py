@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import timedelta
 from decimal import Decimal
@@ -7,6 +8,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import Property, PropertyDuplicateFlag, PropertyHistory, PropertyListingReminder
+
+logger = logging.getLogger(__name__)
 
 
 def record_property_history(property_obj, event_type, summary, actor=None, changes=None, note=""):
@@ -64,6 +67,7 @@ def detect_duplicate_listings(property_obj):
 
 @transaction.atomic
 def confirm_listing_freshness(property_obj, actor, valid_for_days=30, owner_confirmed=False):
+    property_obj = Property.objects.select_for_update().get(pk=property_obj.pk)
     now = timezone.now()
     property_obj.availability_verified_at = now
     property_obj.listing_expires_at = now + timedelta(days=valid_for_days)
@@ -82,68 +86,95 @@ def confirm_listing_freshness(property_obj, actor, valid_for_days=30, owner_conf
     return property_obj
 
 
-def process_listing_freshness(now=None):
+@transaction.atomic
+def _process_one_listing_freshness(property_id, now):
     from agencies.localization import format_localized_date, render_message
     from operations.models import Notification
     from users.models import AgencyUser
 
-    now = now or timezone.now()
-    active = Property.objects.filter(
-        is_published=True, listing_expires_at__isnull=False,
-    ).select_related("assigned_agent", "agency")
+    # ``assigned_agent`` is nullable, so joining it in a SELECT FOR UPDATE
+    # produces an outer join that PostgreSQL cannot lock. Only the required
+    # agency relation is loaded here; the assignee id is already on Property.
+    property_obj = Property.objects.select_for_update().select_related(
+        "agency"
+    ).get(pk=property_id)
     reminder_windows = [
         ("seven_days", timedelta(days=7)), ("three_days", timedelta(days=3)),
         ("one_day", timedelta(days=1)),
     ]
+    remaining = property_obj.listing_expires_at - now
+    reminder_type = None
+    if remaining.total_seconds() <= 0:
+        reminder_type = "expired"
+    else:
+        for candidate_type, window in reversed(reminder_windows):
+            if remaining <= window:
+                reminder_type = candidate_type
+                break
+    if not reminder_type:
+        return 0
+    _, created = PropertyListingReminder.objects.get_or_create(
+        property=property_obj, expiry_at=property_obj.listing_expires_at,
+        reminder_type=reminder_type,
+    )
     notifications_created = 0
-    for property_obj in active:
-        remaining = property_obj.listing_expires_at - now
-        reminder_type = None
-        if remaining.total_seconds() <= 0:
-            reminder_type = "expired"
-        else:
-            for candidate_type, window in reversed(reminder_windows):
-                if remaining <= window:
-                    reminder_type = candidate_type
-                    break
-        if not reminder_type:
-            continue
-        reminder, created = PropertyListingReminder.objects.get_or_create(
-            property=property_obj, expiry_at=property_obj.listing_expires_at,
-            reminder_type=reminder_type,
+    if created:
+        template_key = "listing_expired" if reminder_type == "expired" else "listing_confirmation_due"
+        localized = render_message(
+            property_obj.agency, template_key,
+            property_title=property_obj.title,
+            expiry_date=format_localized_date(
+                property_obj.listing_expires_at,
+                date_system=property_obj.agency.default_date_system,
+                language=property_obj.agency.default_language,
+                nepali_digits=property_obj.agency.use_nepali_digits,
+                include_time=True,
+            ),
         )
+        recipients = AgencyUser.objects.filter(
+            agency=property_obj.agency, is_active=True,
+        ).filter(
+            Q(id=property_obj.assigned_agent_id)
+            | Q(role__in=["agency_owner", "agency_manager"])
+        ).distinct()
+        Notification.objects.bulk_create([
+            Notification(
+                agency=property_obj.agency, user=user,
+                title=localized["subject"], message=localized["body"],
+                category="listing_freshness", link=f"/properties/{property_obj.id}",
+            ) for user in recipients
+        ])
+        notifications_created = recipients.count()
+    if reminder_type == "expired":
+        property_obj.is_published = False
+        property_obj.requires_republish_approval = True
+        property_obj.republish_approval_status = "not_required"
+        property_obj.save(update_fields=[
+            "is_published", "requires_republish_approval",
+            "republish_approval_status", "updated_at",
+        ])
         if created:
-            template_key = "listing_expired" if reminder_type == "expired" else "listing_confirmation_due"
-            localized = render_message(
-                property_obj.agency, template_key,
-                property_title=property_obj.title,
-                expiry_date=format_localized_date(
-                    property_obj.listing_expires_at,
-                    date_system=property_obj.agency.default_date_system,
-                    language=property_obj.agency.default_language,
-                    nepali_digits=property_obj.agency.use_nepali_digits,
-                    include_time=True,
-                ),
+            record_property_history(
+                property_obj, "expired", "Listing automatically hidden after expiry"
             )
-            recipients = AgencyUser.objects.filter(
-                agency=property_obj.agency, is_active=True,
-            ).filter(Q(id=property_obj.assigned_agent_id) | Q(role__in=["agency_owner", "agency_manager"])).distinct()
-            Notification.objects.bulk_create([
-                Notification(
-                    agency=property_obj.agency, user=user,
-                    title=localized["subject"],
-                    message=localized["body"],
-                    category="listing_freshness", link=f"/properties/{property_obj.id}",
-                ) for user in recipients
-            ])
-            notifications_created += recipients.count()
-        if reminder_type == "expired":
-            property_obj.is_published = False
-            property_obj.requires_republish_approval = True
-            property_obj.republish_approval_status = "not_required"
-            property_obj.save(update_fields=[
-                "is_published", "requires_republish_approval", "republish_approval_status", "updated_at",
-            ])
-            if created:
-                record_property_history(property_obj, "expired", "Listing automatically hidden after expiry")
+    return notifications_created
+
+
+def process_listing_freshness(now=None):
+    now = now or timezone.now()
+    ids = Property.objects.filter(
+        is_published=True,
+        listing_expires_at__isnull=False,
+        agency__is_active=True,
+        agency__payment_status="paid",
+    ).filter(
+        Q(agency__subscription_expires_at__isnull=True)
+        | Q(agency__subscription_expires_at__gt=now)
+    ).order_by("id").values_list("id", flat=True)
+    notifications_created = 0
+    for property_id in ids.iterator():
+        try:
+            notifications_created += _process_one_listing_freshness(property_id, now)
+        except Exception:
+            logger.exception("Listing freshness failed for property %s", property_id)
     return notifications_created
