@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import re
 
 from django.contrib.auth.password_validation import validate_password
@@ -454,6 +455,10 @@ class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSeriali
                 errors["metadata"] = "Choose a reason for reporting this listing."
         if errors:
             raise serializers.ValidationError(errors)
+        if len(json.dumps(metadata, ensure_ascii=False, default=str).encode("utf-8")) > 4096:
+            raise serializers.ValidationError({"metadata": "Metadata must be 4 KB or smaller."})
+        if len((attrs.get("message") or "").encode("utf-8")) > 8000:
+            raise serializers.ValidationError({"message": "Message must be 8 KB or smaller."})
         return attrs
 
 
@@ -629,6 +634,20 @@ class AppointmentSerializer(AgencyValidationMixin, serializers.ModelSerializer):
             if duplicate.exists():
                 raise serializers.ValidationError({"starts_at": "This customer already has an appointment during that time."})
         return attrs
+
+
+class PublicAppointmentSerializer(AppointmentSerializer):
+    """Public-safe appointment input; workflow fields remain server controlled."""
+
+    class Meta:
+        model = Appointment
+        fields = [
+            "id", "agent", "agent_name", "property", "property_title",
+            "full_name", "email", "phone", "starts_at", "ends_at", "notes",
+            "status", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "status", "created_at", "updated_at"]
+        extra_kwargs = {"agent": {"required": True, "allow_null": False}}
 
 
 class SubscriptionPlanSerializer(serializers.ModelSerializer):

@@ -15,6 +15,8 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiExample
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from agencies.website_urls import agency_website_url
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import AllowAny
@@ -36,6 +38,15 @@ from .emails import send_login_verification_otp
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+
+def email_verification_required_for_login(user):
+    """Keep non-agent behavior unchanged and make agent OTP environment-aware."""
+    if user.is_email_verified:
+        return False
+    if user.role == User.ROLE_AGENT:
+        return settings.REQUIRE_AGENT_OTP_VERIFICATION
+    return True
 
 
 class LogoutView(APIView):
@@ -104,7 +115,7 @@ class RegisterView(APIView):
                     "website_onboarding_status": user.agency.website_onboarding_status,
                     "website_status": user.agency.website_onboarding_status,
                     "is_website_published": user.agency.is_website_published,
-                    "website_url": f"{settings.STOREFRONT_PUBLIC_URL.rstrip('/')}/agency/{user.agency.slug}",
+                    "website_url": agency_website_url(user.agency),
                 },
                 "next_step": "payment",
             },
@@ -124,6 +135,7 @@ def build_login_response(user):
             "slug": user.agency.slug,
             "website_onboarding_status": user.agency.website_onboarding_status,
             "is_website_published": user.agency.is_website_published,
+            "website_url": agency_website_url(user.agency),
         }
     else:
         agency_data = None
@@ -222,7 +234,7 @@ class LoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not user.is_email_verified:
+        if email_verification_required_for_login(user):
             send_login_verification_otp(user)
 
             return Response(
@@ -443,6 +455,15 @@ class ResendLoginOTPView(APIView):
                 {
                     "detail": "Email is already verified."
                 },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (
+            user.role == User.ROLE_AGENT
+            and not settings.REQUIRE_AGENT_OTP_VERIFICATION
+        ):
+            return Response(
+                {"detail": "Agent email OTP verification is disabled in this environment."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

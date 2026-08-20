@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator, validate_email
+from django.utils import timezone
 from rest_framework import serializers
 
 
@@ -22,7 +23,7 @@ ALLOWED_PAGES = {
 }
 LEGACY_REMOVED_PAGES = {"portal"}
 DEFAULT_ENABLED_PAGES = {
-    "home", "properties", "agents", "contact", "schedule-viewing", "valuation",
+    "home", "properties", "agents", "contact", "valuation",
 }
 ALLOWED_SECTIONS = {
     "hero", "featured_properties", "property_categories", "services", "statistics",
@@ -31,9 +32,9 @@ ALLOWED_SECTIONS = {
 }
 DEFAULT_SECTION_ORDER = [
     "hero", "statistics", "featured_properties", "property_categories", "services",
-    "about", "mission", "vision", "agents", "testimonials", "faqs", "newsletter",
-    "contact_cta", "social_links",
+    "about", "agents", "testimonials", "faqs", "newsletter", "contact_cta",
 ]
+DEFAULT_VISIBLE_SECTIONS = set(DEFAULT_SECTION_ORDER)
 MEDIA_KEYS = {
     "logo", "logo_light", "logo_dark", "favicon", "hero_image",
     "property_placeholder", "social_share_image", "about_image", "partner_logos",
@@ -79,7 +80,7 @@ DEFAULT_WEBSITE_CONFIG = {
     "enabled_pages": {page: page in DEFAULT_ENABLED_PAGES for page in ALLOWED_PAGES},
     "navigation": [],
     "footer_navigation": [],
-    "section_visibility": {section: True for section in ALLOWED_SECTIONS},
+    "section_visibility": {section: section in DEFAULT_VISIBLE_SECTIONS for section in ALLOWED_SECTIONS},
     "section_order": DEFAULT_SECTION_ORDER,
     "facebook_url": "",
     "instagram_url": "",
@@ -395,6 +396,8 @@ def materialize_website_config(agency, value=None):
 
 
 def website_readiness(agency, config=None):
+    from .template_capabilities import template_capability_errors
+
     config = materialize_website_config(agency, config)
     media = config.get("media", {})
     checks = [
@@ -431,6 +434,35 @@ def website_readiness(agency, config=None):
         ),
     }
     checks.extend(page_checks.items())
+    capability_errors = template_capability_errors(agency.website_template, config)
     missing = [name for name, ready in checks if not ready]
+    if capability_errors:
+        missing.append("template_capabilities")
     completed = len(checks) - len(missing)
-    return {"completion_percentage": round((completed / len(checks)) * 100), "is_ready_to_publish": not missing, "missing_fields": missing, "checks": {name: ready for name, ready in checks}}
+    return {
+        "completion_percentage": round((completed / len(checks)) * 100),
+        "is_ready_to_publish": not missing,
+        "missing_fields": missing,
+        "checks": {name: ready for name, ready in checks},
+        "capability_errors": capability_errors,
+    }
+
+
+def merge_website_changes(current, changes):
+    """Recursively merge maps while replacing arrays and scalars atomically."""
+    if not isinstance(current, dict) or not isinstance(changes, dict):
+        return deepcopy(changes)
+    merged = deepcopy(current)
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_website_changes(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def advance_website_draft_revision(agency, user=None):
+    agency.website_draft_revision += 1
+    agency.website_draft_updated_at = timezone.now()
+    agency.website_draft_updated_by = user if getattr(user, "is_authenticated", False) else None
+    return ["website_draft_revision", "website_draft_updated_at", "website_draft_updated_by"]

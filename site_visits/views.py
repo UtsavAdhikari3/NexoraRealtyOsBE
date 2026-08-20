@@ -20,6 +20,8 @@ from .models import SiteVisit
 from .serializers import SiteVisitSerializer, PublicSiteVisitRequestSerializer
 from .emails import send_site_visit_scheduled_email
 from properties.models import Property, PropertyEvent
+from agencies.public_selectors import get_public_agency
+from properties.public_selectors import public_properties
 from leads.models import LeadPropertyInterest, LeadInteraction, LeadStatusHistory
 from leads.services import get_or_create_public_lead
 
@@ -286,21 +288,12 @@ class PublicSiteVisitRequestView(APIView):
 
     @transaction.atomic
     def post(self, request, license_number, property_id):
+        agency = get_public_agency(license_number=license_number)
         property_obj = get_object_or_404(
-            Property,
+            public_properties(agency=agency),
             id=property_id,
-            agency__license_number=license_number,
-            agency__payment_status="paid",
-            agency__is_active=True,
-            is_published=True,
             status="available",
         )
-
-        if (
-            property_obj.agency.subscription_expires_at
-            and property_obj.agency.subscription_expires_at <= timezone.now()
-        ):
-            raise Http404()
 
         serializer = PublicSiteVisitRequestSerializer(
             data=request.data

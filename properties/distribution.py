@@ -19,6 +19,7 @@ from agencies.localization import (
     format_localized_date, format_nepal_address, format_nepal_currency,
     format_nepal_phone,
 )
+from agencies.website_urls import property_website_url
 
 
 ASSET_SPECS = {
@@ -137,8 +138,7 @@ def property_location(property_obj, language="en", nepali_digits=False):
 
 
 def canonical_property_url(property_obj):
-    base = settings.STOREFRONT_PUBLIC_URL.rstrip("/")
-    return f"{base}/agency/{property_obj.agency.slug}/properties/{property_obj.id}"
+    return property_website_url(property_obj)
 
 
 def tracked_url(link, request=None):
@@ -295,17 +295,33 @@ def _register_pdf_fonts():
     global _PDF_FONTS_READY
     if _PDF_FONTS_READY:
         return
-    paths = {
-        "NexoraLatin": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "NexoraLatin-Bold": "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-        "NexoraDevanagari": "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
-        "NexoraDevanagari-Bold": "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+    configured = {
+        "NexoraLatin": getattr(settings, "PDF_LATIN_FONT", ""),
+        "NexoraLatin-Bold": getattr(settings, "PDF_LATIN_BOLD_FONT", ""),
+        "NexoraDevanagari": getattr(settings, "PDF_DEVANAGARI_FONT", ""),
+        "NexoraDevanagari-Bold": getattr(settings, "PDF_DEVANAGARI_BOLD_FONT", ""),
     }
-    if all(os.path.exists(path) for path in paths.values()):
-        for name, path in paths.items():
-            pdfmetrics.registerFont(TTFont(name, path, shapable=True))
-        _PDF_FONTS_READY = True
-        return
+    candidates = [
+        configured,
+        {
+            "NexoraLatin": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "NexoraLatin-Bold": "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            "NexoraDevanagari": "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+            "NexoraDevanagari-Bold": "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+        },
+        {
+            "NexoraLatin": "C:/Windows/Fonts/arial.ttf",
+            "NexoraLatin-Bold": "C:/Windows/Fonts/arialbd.ttf",
+            "NexoraDevanagari": "C:/Windows/Fonts/Nirmala.ttc",
+            "NexoraDevanagari-Bold": "C:/Windows/Fonts/Nirmala.ttc",
+        },
+    ]
+    for paths in candidates:
+        if all(path and os.path.exists(path) for path in paths.values()):
+            for name, path in paths.items():
+                pdfmetrics.registerFont(TTFont(name, path, shapable=True))
+            _PDF_FONTS_READY = True
+            return
     raise RuntimeError("A Unicode PDF font is required. Install fonts-noto-core.")
 
 

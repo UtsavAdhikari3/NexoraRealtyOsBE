@@ -1,12 +1,14 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.http import Http404
+from django.shortcuts import get_object_or_404
 from django.core.files.storage import default_storage
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from pathlib import Path
 from uuid import uuid4
 from copy import deepcopy
+import json
 
 from PIL import Image
 
@@ -17,13 +19,16 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .serializers import TestMarkAgencyPaidSerializer
-from .serializers import AgencySerializer, WebsiteOnboardingSerializer
-from .models import Agency
+from .serializers import AgencyDomainSerializer, AgencySerializer, WebsiteOnboardingSerializer, WebsiteVersionSerializer
+from .models import Agency, AgencyDomain, WebsiteVersion
+from .domains import verify_domain_ownership
 from .website_onboarding import (
     MEDIA_KEYS,
+    advance_website_draft_revision,
     materialize_website_config,
     website_readiness,
 )
+from .website_publishing import publish_website_snapshot
 from drf_spectacular.utils import extend_schema, inline_serializer
 
 User = get_user_model()
@@ -148,6 +153,7 @@ class CurrentAgencyView(APIView):
             ).data
         )
 
+    @transaction.atomic
     def patch(self, request):
         if not request.user.is_authenticated or not request.user.agency_id:
             return Response(
@@ -159,9 +165,10 @@ class CurrentAgencyView(APIView):
                 {"detail": "Only owners or managers can update agency settings."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        was_completed = request.user.agency.website_onboarding_status == Agency.WEBSITE_ONBOARDING_COMPLETED
+        locked_agency = Agency.objects.select_for_update().get(pk=request.user.agency_id)
+        was_completed = locked_agency.website_onboarding_status == Agency.WEBSITE_ONBOARDING_COMPLETED
         serializer = self.serializer_class(
-            request.user.agency,
+            locked_agency,
             data=request.data,
             partial=True,
             context={"request": request},
@@ -191,8 +198,10 @@ class CurrentAgencyView(APIView):
         instance.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED if was_completed else (
             Agency.WEBSITE_ONBOARDING_READY if readiness["is_ready_to_publish"] else Agency.WEBSITE_ONBOARDING_IN_PROGRESS
         )
+        revision_fields = advance_website_draft_revision(instance, request.user)
         instance.save(update_fields=[
             "website_draft_config", "website_completion_percentage", "website_onboarding_status",
+            *revision_fields,
         ])
         return Response(self.serializer_class(instance, context={"request": request}).data)
 
@@ -221,13 +230,38 @@ class WebsiteOnboardingView(APIView):
             return error
         return Response(self.serializer_class(agency, context={"request": request}).data)
 
+    @transaction.atomic
     def patch(self, request):
         agency, error = self.get_agency(request)
         if error:
             return error
+        agency = Agency.objects.select_for_update().get(pk=agency.pk)
+        base_revision = request.data.get("base_revision")
+        if base_revision not in (None, ""):
+            try:
+                base_revision = int(base_revision)
+            except (TypeError, ValueError):
+                return Response({"base_revision": ["Enter a valid revision number."]}, status=status.HTTP_400_BAD_REQUEST)
+            if base_revision != agency.website_draft_revision:
+                current = self.serializer_class(agency, context={"request": request}).data
+                return Response(
+                    {
+                        "detail": "This website draft was updated elsewhere.",
+                        "current_revision": agency.website_draft_revision,
+                        "current": current,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+        changes = request.data.get("changes")
+        if isinstance(changes, str):
+            try:
+                changes = json.loads(changes)
+            except json.JSONDecodeError:
+                return Response({"changes": ["Enter a valid JSON object."]}, status=status.HTTP_400_BAD_REQUEST)
+        payload = changes if isinstance(changes, dict) else request.data
         serializer = self.serializer_class(
             agency,
-            data=request.data,
+            data=payload,
             partial=True,
             context={"request": request},
         )
@@ -273,10 +307,12 @@ class WebsitePreviewView(WebsiteOnboardingView):
 class WebsiteMediaView(WebsiteOnboardingView):
     allowed_types = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/x-icon": ".ico"}
 
+    @transaction.atomic
     def post(self, request):
         agency, error = self.get_agency(request)
         if error:
             return error
+        agency = Agency.objects.select_for_update().get(pk=agency.pk)
         kind = str(request.data.get("kind", "")).strip()
         upload = request.FILES.get("file")
         if kind not in MEDIA_KEYS:
@@ -314,16 +350,19 @@ class WebsiteMediaView(WebsiteOnboardingView):
         agency.website_draft_config = config
         if agency.website_onboarding_status != Agency.WEBSITE_ONBOARDING_COMPLETED:
             agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_IN_PROGRESS
-        agency.save(update_fields=["website_draft_config", "website_onboarding_status"])
+        revision_fields = advance_website_draft_revision(agency, request.user)
+        agency.save(update_fields=["website_draft_config", "website_onboarding_status", *revision_fields])
         published_media = (agency.website_published_config.get("media") or {}) if agency.website_published_config else {}
         if kind != "partner_logos" and previous and previous != published_media.get(kind) and previous.startswith(f"agency_websites/{agency.id}/"):
             default_storage.delete(previous)
         return Response(self.serializer_class(agency, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
+    @transaction.atomic
     def delete(self, request):
         agency, error = self.get_agency(request)
         if error:
             return error
+        agency = Agency.objects.select_for_update().get(pk=agency.pk)
         kind = str(request.data.get("kind", "")).strip()
         if kind not in MEDIA_KEYS:
             return Response({"kind": ["Choose a supported website media type."]}, status=status.HTTP_400_BAD_REQUEST)
@@ -340,7 +379,8 @@ class WebsiteMediaView(WebsiteOnboardingView):
         agency.website_draft_config = config
         if agency.website_onboarding_status != Agency.WEBSITE_ONBOARDING_COMPLETED:
             agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_IN_PROGRESS
-        agency.save(update_fields=["website_draft_config", "website_onboarding_status"])
+        revision_fields = advance_website_draft_revision(agency, request.user)
+        agency.save(update_fields=["website_draft_config", "website_onboarding_status", *revision_fields])
         published_media = (agency.website_published_config.get("media") or {}) if agency.website_published_config else {}
         published_values = published_media.get(kind, []) if kind == "partner_logos" else [published_media.get(kind)]
         if previous and previous not in published_values and previous.startswith(f"agency_websites/{agency.id}/"):
@@ -381,32 +421,167 @@ class WebsitePublishView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        now = timezone.now()
-        published = materialize_website_config(agency)
-        agency.website_published_config = published
-        agency.website_config = published  # Legacy readers remain compatible during rollout.
-        agency.website_draft_config = deepcopy(published)
-        agency.website_draft_config["accuracy_confirmed"] = False
-        agency.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED
-        agency.website_onboarding_completed_at = now
-        agency.website_published_at = now
-        agency.is_website_published = True
-        agency.website_completion_percentage = 100
-        agency.website_config_version += 1
-        agency.save(
-            update_fields=[
-                "website_config",
-                "website_published_config",
-                "website_draft_config",
-                "website_onboarding_status",
-                "website_onboarding_completed_at",
-                "website_published_at",
-                "is_website_published",
-                "website_completion_percentage",
-                "website_config_version",
-            ]
-        )
+        publish_website_snapshot(agency, request.user)
         return Response(WebsiteOnboardingSerializer(agency, context={"request": request}).data)
+
+
+class WebsiteVersionAccessMixin:
+    def get_agency(self, request, lock=False):
+        agency = getattr(request.user, "agency", None)
+        if not agency or request.user.role not in ["agency_owner", "agency_manager"]:
+            return None
+        queryset = Agency.objects.select_for_update() if lock else Agency.objects
+        return queryset.get(pk=agency.pk)
+
+
+class AgencyDomainAccessMixin:
+    def get_agency(self, request, lock=False):
+        agency = getattr(request.user, "agency", None)
+        if not agency or request.user.role not in ["agency_owner", "agency_manager"]:
+            return None
+        queryset = Agency.objects.select_for_update() if lock else Agency.objects
+        return queryset.get(pk=agency.pk)
+
+
+class AgencyDomainListCreateView(AgencyDomainAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agency = self.get_agency(request)
+        if not agency:
+            return Response({"detail": "Only owners or managers can manage website domains."}, status=status.HTTP_403_FORBIDDEN)
+        return Response(AgencyDomainSerializer(agency.website_domains.all(), many=True).data)
+
+    @transaction.atomic
+    def post(self, request):
+        agency = self.get_agency(request, lock=True)
+        if not agency:
+            return Response({"detail": "Only owners or managers can manage website domains."}, status=status.HTTP_403_FORBIDDEN)
+        serializer = AgencyDomainSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            domain = serializer.save(agency=agency)
+        except IntegrityError:
+            return Response({"domain": ["This domain has already been claimed."]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AgencyDomainSerializer(domain).data, status=status.HTTP_201_CREATED)
+
+
+class AgencyDomainVerifyView(AgencyDomainAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        agency = self.get_agency(request, lock=True)
+        if not agency:
+            return Response({"detail": "Only owners or managers can verify website domains."}, status=status.HTTP_403_FORBIDDEN)
+        domain = get_object_or_404(AgencyDomain.objects.select_for_update(), pk=pk, agency=agency)
+        verified = verify_domain_ownership(domain)
+        now = timezone.now()
+        domain.last_checked_at = now
+        domain.status = AgencyDomain.STATUS_VERIFIED if verified else AgencyDomain.STATUS_FAILED
+        domain.is_active = verified
+        domain.verified_at = domain.verified_at or now if verified else None
+        update_fields = ["last_checked_at", "status", "is_active", "verified_at", "updated_at"]
+        if not verified and domain.is_primary:
+            domain.is_primary = False
+            agency.custom_domain = ""
+            agency.save(update_fields=["custom_domain"])
+            update_fields.append("is_primary")
+        domain.save(update_fields=update_fields)
+        response_status = status.HTTP_200_OK if verified else status.HTTP_400_BAD_REQUEST
+        return Response({"verified": verified, "domain": AgencyDomainSerializer(domain).data}, status=response_status)
+
+
+class AgencyDomainPrimaryView(AgencyDomainAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        agency = self.get_agency(request, lock=True)
+        if not agency:
+            return Response({"detail": "Only owners or managers can set the primary domain."}, status=status.HTTP_403_FORBIDDEN)
+        domain = get_object_or_404(AgencyDomain.objects.select_for_update(), pk=pk, agency=agency)
+        if domain.status != AgencyDomain.STATUS_VERIFIED or not domain.is_active:
+            return Response({"detail": "Verify this domain before making it primary."}, status=status.HTTP_400_BAD_REQUEST)
+        AgencyDomain.objects.filter(agency=agency, is_primary=True).exclude(pk=domain.pk).update(is_primary=False)
+        domain.is_primary = True
+        domain.save(update_fields=["is_primary", "updated_at"])
+        agency.custom_domain = domain.domain
+        agency.save(update_fields=["custom_domain"])
+        return Response(AgencyDomainSerializer(domain).data)
+
+
+class AgencyDomainDetailView(AgencyDomainAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def delete(self, request, pk):
+        agency = self.get_agency(request, lock=True)
+        if not agency:
+            return Response({"detail": "Only owners or managers can remove website domains."}, status=status.HTTP_403_FORBIDDEN)
+        domain = get_object_or_404(AgencyDomain.objects.select_for_update(), pk=pk, agency=agency)
+        if domain.is_primary or agency.custom_domain.lower() == domain.domain:
+            agency.custom_domain = ""
+            agency.save(update_fields=["custom_domain"])
+        domain.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WebsiteVersionListView(WebsiteVersionAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agency = self.get_agency(request)
+        if not agency:
+            return Response({"detail": "Only owners or managers can view website history."}, status=status.HTTP_403_FORBIDDEN)
+        versions = WebsiteVersion.objects.filter(agency=agency).select_related(
+            "agency", "published_by", "restored_from"
+        )
+        return Response(WebsiteVersionSerializer(versions, many=True).data)
+
+
+class WebsiteVersionDetailView(WebsiteVersionAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, version):
+        agency = self.get_agency(request)
+        if not agency:
+            return Response({"detail": "Only owners or managers can view website history."}, status=status.HTTP_403_FORBIDDEN)
+        item = get_object_or_404(
+            WebsiteVersion.objects.select_related("agency", "published_by", "restored_from"),
+            agency=agency,
+            version=version,
+        )
+        return Response(WebsiteVersionSerializer(item).data)
+
+
+class WebsiteVersionRestoreView(WebsiteVersionAccessMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, version):
+        agency = self.get_agency(request, lock=True)
+        if not agency:
+            return Response({"detail": "Only owners or managers can restore website history."}, status=status.HTTP_403_FORBIDDEN)
+        if not agency.has_active_subscription:
+            return Response({"detail": "An active Nexora subscription is required before publishing."}, status=status.HTTP_403_FORBIDDEN)
+        source = get_object_or_404(WebsiteVersion, agency=agency, version=version)
+        agency.website_template = source.template_key
+        agency.website_draft_config = deepcopy(source.config)
+        readiness = website_readiness(agency, agency.website_draft_config)
+        if not readiness["is_ready_to_publish"]:
+            return Response(
+                {"detail": "This historical version no longer passes website validation.", **readiness},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        restored = publish_website_snapshot(agency, request.user, source_version=source)
+        return Response(
+            {
+                "website": WebsiteOnboardingSerializer(agency, context={"request": request}).data,
+                "version": WebsiteVersionSerializer(restored).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class WebsiteUnpublishView(APIView):

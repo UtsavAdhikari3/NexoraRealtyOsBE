@@ -1,5 +1,8 @@
 import shutil
 import tempfile
+from io import BytesIO
+
+from PIL import Image
 
 from django.test import override_settings
 from django.urls import reverse
@@ -16,6 +19,12 @@ from properties.models import Property, PropertyMedia
 TEMP_MEDIA_ROOT = tempfile.mkdtemp()
 
 User = get_user_model()
+
+
+def valid_image_upload(name="front.jpg"):
+    output = BytesIO()
+    Image.new("RGB", (32, 24), color=(120, 140, 160)).save(output, format="JPEG")
+    return SimpleUploadedFile(name, output.getvalue(), content_type="image/jpeg")
 
 
 @override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
@@ -65,11 +74,7 @@ class PropertyMediaAPITestCase(APITestCase):
             kwargs={"property_id": self.property.id}
         )
 
-        file = SimpleUploadedFile(
-            "front.jpg",
-            b"fake-image-content",
-            content_type="image/jpeg"
-        )
+        file = valid_image_upload()
 
         payload = {
             "media_type": "image",
@@ -95,6 +100,13 @@ class PropertyMediaAPITestCase(APITestCase):
         self.assertEqual(media.agency, self.agency)
         self.assertEqual(media.media_type, "image")
         self.assertTrue(media.is_primary)
+        self.assertEqual((media.original_width, media.original_height), (32, 24))
+        self.assertEqual((media.card_width, media.card_height), (32, 24))
+        self.assertEqual((media.large_width, media.large_height), (32, 24))
+        self.assertTrue(media.card_image.name.endswith(".webp"))
+        self.assertTrue(media.large_image.name.endswith(".webp"))
+        self.assertTrue(media.card_image.storage.exists(media.card_image.name))
+        self.assertTrue(media.large_image.storage.exists(media.large_image.name))
 
     def test_authenticated_user_can_list_property_media(self):
         PropertyMedia.objects.create(
@@ -116,6 +128,21 @@ class PropertyMediaAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["title"], "Front View")
+
+    def test_corrupt_image_upload_is_rejected(self):
+        response = self.client.post(
+            reverse("property-media-list", kwargs={"property_id": self.property.id}),
+            {
+                "media_type": "image",
+                "file": SimpleUploadedFile(
+                    "broken.jpg", b"not-an-image", content_type="image/jpeg"
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(PropertyMedia.objects.count(), 0)
 
     def test_user_cannot_upload_media_to_another_agency_property(self):
         other_agency = Agency.objects.create(
@@ -144,11 +171,7 @@ class PropertyMediaAPITestCase(APITestCase):
             kwargs={"property_id": other_property.id}
         )
 
-        file = SimpleUploadedFile(
-            "land.jpg",
-            b"fake-image-content",
-            content_type="image/jpeg"
-        )
+        file = valid_image_upload("land.jpg")
 
         payload = {
             "media_type": "image",
@@ -184,6 +207,22 @@ class PropertyMediaAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(PropertyMedia.objects.count(), 0)
 
+    def test_delete_removes_generated_files(self):
+        create_response = self.client.post(
+            reverse("property-media-list", kwargs={"property_id": self.property.id}),
+            {"media_type": "image", "file": valid_image_upload(), "is_primary": True},
+            format="multipart",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        media = PropertyMedia.objects.get()
+        files = [(field.storage, field.name) for field in [media.file, media.card_image, media.large_image]]
+
+        response = self.client.delete(reverse("property-media-detail", kwargs={"pk": media.id}))
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        for storage, name in files:
+            self.assertFalse(storage.exists(name))
+
     def test_unauthenticated_user_cannot_upload_property_media(self):
         self.client.force_authenticate(user=None)
 
@@ -192,11 +231,7 @@ class PropertyMediaAPITestCase(APITestCase):
             kwargs={"property_id": self.property.id}
         )
 
-        file = SimpleUploadedFile(
-            "front.jpg",
-            b"fake-image-content",
-            content_type="image/jpeg"
-        )
+        file = valid_image_upload()
 
         payload = {
             "media_type": "image",

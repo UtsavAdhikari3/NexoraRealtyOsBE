@@ -45,7 +45,8 @@ Django REST backend for a multi-tenant real-estate agency operating system. It s
    - Swagger: `http://localhost:8000/api/docs/`
    - ReDoc: `http://localhost:8000/api/redoc/`
    - Health: `http://localhost:8000/api/health/`
-   - Agency storefront: `http://localhost:3000/agency/<agency-slug>`
+   - Published agency template: `http://localhost:5173/?tenant=<agency-slug>`
+   - Draft preview service: `http://localhost:3000`
 
 The API container waits for PostgreSQL, applies migrations, collects static files, and starts Gunicorn as an unprivileged user. Compose also builds the sibling Next.js storefront with separate browser and Docker-internal API addresses. PostgreSQL, media, and static data use persistent Docker volumes.
 
@@ -88,9 +89,11 @@ Docker Compose includes a scheduler service that runs these jobs every five minu
 ## Production requirements
 
 - Set `DEBUG=False`.
+- Set `REQUIRE_AGENT_OTP_VERIFICATION=True`. Local development may use `False`; when omitted it defaults to `True` whenever `DEBUG=False`.
 - Set a strong `DJANGO_SECRET_KEY`; startup fails without one in production.
 - Set exact `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, and `CSRF_TRUSTED_ORIGINS`.
-- Set `STOREFRONT_PUBLIC_API_URL`, `STOREFRONT_DEFAULT_AGENCY_SLUG`, `STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER`, and `STOREFRONT_PUBLIC_URL` for the deployed storefront.
+- Set `STOREFRONT_PUBLIC_URL` to the published template pattern (for example `https://{slug}.nexorarealtyos.com`) and `STOREFRONT_PREVIEW_URL` to the draft-preview service. The legacy Next.js container still uses `STOREFRONT_PUBLIC_API_URL`, `STOREFRONT_DEFAULT_AGENCY_SLUG`, and `STOREFRONT_DEFAULT_AGENCY_LICENSE_NUMBER` for draft previews.
+- Set `PLATFORM_DOMAIN_SUFFIX`, `CUSTOM_DOMAIN_CNAME_TARGET`, and `DNS_OVER_HTTPS_URL` for custom-domain ownership checks. DNS/TLS and reverse-proxy/CDN host provisioning remain deployment responsibilities.
 - The end-to-end agency website creator, publishing rules, preview security, and deployment variables are documented in [`docs/WEBSITE_ONBOARDING.md`](docs/WEBSITE_ONBOARDING.md).
 - Configure SMTP and persistent/object media storage.
 - Configure `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and the three `STRIPE_PRICE_*` IDs. Point Stripe webhooks to `/api/webhooks/stripe/`.

@@ -1,3 +1,4 @@
+import json
 from urllib.parse import urlencode
 
 import requests
@@ -189,6 +190,52 @@ def publish_facebook_photo_post(
     return response.json()
 
 
+def upload_facebook_unpublished_photo(
+    page_id,
+    page_access_token,
+    image_file,
+    filename,
+    content_type,
+):
+    response = requests.post(
+        f"{graph_base_url()}/{page_id}/photos",
+        data={
+            "published": "false",
+            "access_token": page_access_token,
+        },
+        files={
+            "source": (filename, image_file, content_type),
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def publish_facebook_multi_photo_post(
+    page_id,
+    page_access_token,
+    photo_ids,
+    message,
+):
+    payload = {
+        "message": message,
+        "access_token": page_access_token,
+    }
+    for index, photo_id in enumerate(photo_ids):
+        payload[f"attached_media[{index}]"] = json.dumps(
+            {"media_fbid": photo_id}
+        )
+
+    response = requests.post(
+        f"{graph_base_url()}/{page_id}/feed",
+        data=payload,
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
 def update_facebook_post(post_id, page_access_token, message):
     response = requests.post(
         f"{graph_base_url()}/{post_id}",
@@ -254,12 +301,38 @@ def create_instagram_image_container(
     instagram_account_id,
     page_access_token,
     image_url,
+    caption="",
+    is_carousel_item=False,
+):
+    payload = {
+        "image_url": image_url,
+        "access_token": page_access_token,
+    }
+    if caption:
+        payload["caption"] = caption
+    if is_carousel_item:
+        payload["is_carousel_item"] = "true"
+
+    response = requests.post(
+        f"{graph_base_url()}/{instagram_account_id}/media",
+        data=payload,
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def create_instagram_carousel_container(
+    instagram_account_id,
+    page_access_token,
+    child_container_ids,
     caption,
 ):
     response = requests.post(
         f"{graph_base_url()}/{instagram_account_id}/media",
         data={
-            "image_url": image_url,
+            "media_type": "CAROUSEL",
+            "children": ",".join(child_container_ids),
             "caption": caption,
             "access_token": page_access_token,
         },

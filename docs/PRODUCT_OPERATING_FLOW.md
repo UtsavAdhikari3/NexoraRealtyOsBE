@@ -339,7 +339,7 @@ Failure cases:
 
 User action:
 
-1. Visitor opens `/agency/{agencySlug}` or a custom domain.
+1. Visitor opens the agency's tenant URL (locally `/?tenant={agencySlug}`, in production usually `{agencySlug}.nexorarealtyos.com`) or a custom domain.
 2. Next.js fetches agency data through `/api/public/agencies/by-slug/{slug}/` or `/api/public/agencies/by-domain/`.
 3. Listing pages call `/api/public/agencies/{license_number}/properties/`.
 4. Public queryset filters to active, paid agencies with active subscription and listings that are `is_published=True`, status `available/reserved/under_negotiation`, `availability_verified_at` set, and `listing_expires_at` in the future.

@@ -11,7 +11,7 @@ from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from agencies.models import Agency
+from agencies.models import Agency, WebsiteVersion
 from agencies.website_onboarding import default_website_config
 from properties.models import Property
 from users.models import AgencyUser
@@ -74,6 +74,123 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertFalse(self.agency.is_website_published)
         self.assertEqual(self.agency.website_draft_config["hero_title"], config["hero_title"])
 
+    def test_autosave_merges_nested_changes_and_increments_revision(self):
+        self.client.force_authenticate(self.owner)
+        original = default_website_config()
+        original["hero_title"] = "Original headline"
+        original["section_visibility"]["about"] = True
+        self.agency.website_draft_config = original
+        self.agency.save(update_fields=["website_draft_config"])
+
+        response = self.client.patch(
+            reverse("website-onboarding"),
+            {
+                "base_revision": 0,
+                "changes": {
+                    "website_draft_config": {
+                        "hero_title": "Autosaved headline",
+                        "section_visibility": {"hero": False},
+                        "section_order": ["hero", "contact_cta"],
+                    }
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["website_draft_revision"], 1)
+        self.assertEqual(response.data["website_draft_config"]["hero_title"], "Autosaved headline")
+        self.assertFalse(response.data["website_draft_config"]["section_visibility"]["hero"])
+        self.assertTrue(response.data["website_draft_config"]["section_visibility"]["about"])
+        self.assertEqual(response.data["website_draft_config"]["section_order"], ["hero", "contact_cta"])
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.website_draft_updated_by, self.owner)
+        self.assertIsNotNone(self.agency.website_draft_updated_at)
+
+    def test_consecutive_autosaves_replace_old_form_values(self):
+        self.client.force_authenticate(self.owner)
+        original = default_website_config()
+        original.update({
+            "hero_title": "Old headline",
+            "about": "Old agency description that is deliberately long enough for validation.",
+            "public_phone": "+977 9800000000",
+        })
+        self.agency.website_draft_config = original
+        self.agency.about = original["about"]
+        self.agency.phone = original["public_phone"]
+        self.agency.save(update_fields=["website_draft_config", "about", "phone"])
+
+        first = self.client.patch(
+            reverse("website-onboarding"),
+            {
+                "base_revision": 0,
+                "changes": {
+                    "about": "First replacement description that remains long enough for validation.",
+                    "website_draft_config": {
+                        "hero_title": "First replacement headline",
+                        "about": "First replacement description that remains long enough for validation.",
+                    },
+                },
+            },
+            format="json",
+        )
+        second = self.client.patch(
+            reverse("website-onboarding"),
+            {
+                "base_revision": first.data["website_draft_revision"],
+                "changes": {
+                    "about": "Newest replacement description that remains long enough for validation.",
+                    "website_draft_config": {
+                        "hero_title": "Newest replacement headline",
+                        "about": "Newest replacement description that remains long enough for validation.",
+                    },
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data["website_draft_config"]["hero_title"], "Newest replacement headline")
+        self.assertEqual(
+            second.data["website_draft_config"]["about"],
+            "Newest replacement description that remains long enough for validation.",
+        )
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.website_draft_config["hero_title"], "Newest replacement headline")
+
+    def test_stale_autosave_returns_conflict_without_overwriting(self):
+        self.client.force_authenticate(self.owner)
+        first = self.client.patch(
+            reverse("website-onboarding"),
+            {"base_revision": 0, "changes": {"website_draft_config": {"hero_title": "First writer"}}},
+            format="json",
+        )
+        stale = self.client.patch(
+            reverse("website-onboarding"),
+            {"base_revision": 0, "changes": {"website_draft_config": {"hero_title": "Stale writer"}}},
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(stale.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(stale.data["current_revision"], 1)
+        self.assertEqual(stale.data["current"]["website_draft_config"]["hero_title"], "First writer")
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.website_draft_config["hero_title"], "First writer")
+
+    def test_editor_payload_includes_public_tenant_identity(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(reverse("website-onboarding"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["license_number"], "ONBOARD-001")
+        self.assertEqual(response.data["slug"], self.agency.slug)
+        self.assertEqual(response.data["template_capabilities"]["template_key"], "luxury-agency")
+        self.assertEqual(
+            response.data["template_capabilities"]["supported_pages"],
+            ["home", "properties", "agents", "about", "contact", "valuation"],
+        )
+
     def test_login_directs_incomplete_owner_to_website_creator(self):
         response = self.client.post(
             reverse("login"),
@@ -90,7 +207,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertIn("logo", response.data["missing_fields"])
         self.assertFalse(response.data["is_ready_to_publish"])
 
-    def test_enabled_content_page_must_have_content_before_publish(self):
+    def test_publish_rejects_page_the_selected_template_cannot_render(self):
         self.complete_required_profile()
         config = default_website_config()
         config["hero_title"] = "A better way to find property in Nepal"
@@ -103,7 +220,8 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         response = self.client.post(reverse("website-publish"))
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("services_page_content", response.data["missing_fields"])
+        self.assertIn("template_capabilities", response.data["missing_fields"])
+        self.assertIn("services", response.data["capability_errors"]["enabled_pages"])
 
     def test_navigation_cannot_reference_a_disabled_or_removed_page(self):
         self.client.force_authenticate(self.owner)
@@ -146,6 +264,8 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertEqual(self.agency.website_published_config["hero_title"], config["hero_title"])
         self.assertEqual(self.agency.website_config, self.agency.website_published_config)
         self.assertEqual(self.agency.website_config_version, 1)
+        self.assertEqual(WebsiteVersion.objects.filter(agency=self.agency).count(), 1)
+        self.assertEqual(WebsiteVersion.objects.get(agency=self.agency).config["hero_title"], config["hero_title"])
         self.assertEqual(self.agency.website_onboarding_status, Agency.WEBSITE_ONBOARDING_COMPLETED)
 
         public = self.client.get(
@@ -153,6 +273,34 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         )
         self.assertEqual(public.status_code, status.HTTP_200_OK)
         self.assertEqual(public.data["website_config"]["hero_title"], config["hero_title"])
+
+    def test_publish_history_and_restore_create_immutable_new_versions(self):
+        self.complete_required_profile()
+        first_config = default_website_config()
+        first_config.update({"hero_title": "Version one", "accuracy_confirmed": True})
+        self.agency.website_draft_config = first_config
+        self.agency.save(update_fields=["website_draft_config"])
+        self.client.force_authenticate(self.owner)
+        self.assertEqual(self.client.post(reverse("website-publish")).status_code, status.HTTP_200_OK)
+
+        second_config = default_website_config()
+        second_config.update({"hero_title": "Version two", "accuracy_confirmed": True})
+        self.agency.website_draft_config = second_config
+        self.agency.save(update_fields=["website_draft_config"])
+        self.assertEqual(self.client.post(reverse("website-publish")).status_code, status.HTTP_200_OK)
+
+        versions = self.client.get(reverse("website-version-list"))
+        detail = self.client.get(reverse("website-version-detail", kwargs={"version": 1}))
+        restored = self.client.post(reverse("website-version-restore", kwargs={"version": 1}))
+
+        self.assertEqual([item["version"] for item in versions.data], [2, 1])
+        self.assertEqual(detail.data["config"]["hero_title"], "Version one")
+        self.assertEqual(restored.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(restored.data["version"]["version"], 3)
+        self.assertEqual(restored.data["version"]["restored_from_version"], 1)
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.website_published_config["hero_title"], "Version one")
+        self.assertEqual(WebsiteVersion.objects.get(agency=self.agency, version=2).config["hero_title"], "Version two")
 
     def test_saving_a_new_draft_does_not_change_the_live_configuration(self):
         self.complete_required_profile()

@@ -119,20 +119,12 @@ class PublicPropertyMVPAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn(
-            {
-                "value": "Bagmati",
-                "label": "Bagmati",
-                "type": "province",
-            },
-            response.data["locations"],
+            {"value": "Bagmati", "label": "Bagmati", "count": 1},
+            response.data["locations"]["provinces"],
         )
         self.assertIn(
-            {
-                "value": "Lalitpur",
-                "label": "Lalitpur",
-                "type": "district",
-            },
-            response.data["locations"],
+            {"value": "Lalitpur", "label": "Lalitpur", "count": 1},
+            response.data["locations"]["districts"],
         )
         self.assertTrue(response.data["property_types"])
         self.assertTrue(response.data["purposes"])

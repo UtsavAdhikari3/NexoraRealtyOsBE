@@ -10,16 +10,27 @@ from PIL import Image, UnidentifiedImageError
 
 from social_media.models import SocialAccount, SocialPost, SocialPublishResult
 from .meta import (
+    create_instagram_carousel_container,
     create_instagram_image_container,
     get_instagram_container_status,
     publish_facebook_feed_post,
+    publish_facebook_multi_photo_post,
     publish_facebook_photo_post,
     publish_instagram_container,
+    upload_facebook_unpublished_photo,
 )
 
 
-def get_public_media_url(post):
-    if not post.image:
+def get_post_images(post):
+    media_images = [item.image for item in post.media_items.all()]
+    if media_images:
+        return media_images
+    return [post.image] if post.image else []
+
+
+def get_public_media_url(post, image_file=None):
+    image_file = image_file or post.image
+    if not image_file:
         raise ValueError("Image publishing requires an uploaded image.")
 
     base_url = getattr(settings, "PUBLIC_API_BASE_URL", "").strip()
@@ -37,21 +48,22 @@ def get_public_media_url(post):
             "Configure PUBLIC_API_BASE_URL with a public HTTPS URL so Meta can fetch the image."
         )
 
-    return urljoin(f"{base_url.rstrip('/')}/", post.image.url.lstrip("/"))
+    return urljoin(f"{base_url.rstrip('/')}/", image_file.url.lstrip("/"))
 
 
-def get_public_image_url(post):
-    image_url = get_public_media_url(post)
-    extension = PurePosixPath(post.image.name).suffix.lower()
+def get_public_image_url(post, image_file=None):
+    image_file = image_file or post.image
+    image_url = get_public_media_url(post, image_file=image_file)
+    extension = PurePosixPath(image_file.name).suffix.lower()
     if extension not in {".jpg", ".jpeg"}:
         raise ValueError("Instagram image publishing currently requires a JPEG image.")
 
     try:
-        with post.image.open("rb") as image_file:
-            image = Image.open(image_file)
+        with image_file.open("rb") as opened_image:
+            image = Image.open(opened_image)
             image.verify()
-        with post.image.open("rb") as image_file:
-            image = Image.open(image_file)
+        with image_file.open("rb") as opened_image:
+            image = Image.open(opened_image)
             width, height = image.size
             image_format = image.format
     except (UnidentifiedImageError, OSError) as exc:
@@ -59,7 +71,7 @@ def get_public_image_url(post):
 
     if image_format != "JPEG":
         raise ValueError("Instagram image publishing currently requires a JPEG image.")
-    if post.image.size > 8 * 1024 * 1024:
+    if image_file.size > 8 * 1024 * 1024:
         raise ValueError("Instagram images cannot exceed 8 MB.")
     if width < 320:
         raise ValueError("Instagram images must be at least 320 pixels wide.")
@@ -91,21 +103,7 @@ def find_target_account(post, platform):
     return queryset.order_by("id").first()
 
 
-def publish_instagram_image(post, account, result=None):
-    image_url = get_public_image_url(post)
-    container_data = create_instagram_image_container(
-        instagram_account_id=account.external_id,
-        page_access_token=account.access_token,
-        image_url=image_url,
-        caption=post.caption,
-    )
-    container_id = container_data.get("id")
-    if not container_id:
-        raise ValueError("Meta did not return an Instagram media container ID.")
-    if result is not None:
-        result.container_id = container_id
-        result.save(update_fields=["container_id", "updated_at"])
-
+def wait_for_instagram_container(container_id, page_access_token):
     attempts = settings.INSTAGRAM_CONTAINER_POLL_ATTEMPTS
     interval = settings.INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS
     deadline = time.monotonic() + settings.INSTAGRAM_PUBLISH_DEADLINE_SECONDS
@@ -116,7 +114,7 @@ def publish_instagram_image(post, account, result=None):
             break
         status_data = get_instagram_container_status(
             container_id=container_id,
-            page_access_token=account.access_token,
+            page_access_token=page_access_token,
         )
         last_status = status_data.get("status_code")
         if last_status == "FINISHED":
@@ -137,6 +135,60 @@ def publish_instagram_image(post, account, result=None):
             "the uploaded image URL is publicly reachable over HTTPS."
         )
 
+
+def publish_instagram_images(post, account, result=None):
+    images = get_post_images(post)
+    if not images:
+        raise ValueError("Instagram publishing requires at least one image.")
+
+    if len(images) == 1:
+        image_url = get_public_image_url(post, image_file=images[0])
+        container_data = create_instagram_image_container(
+            instagram_account_id=account.external_id,
+            page_access_token=account.access_token,
+            image_url=image_url,
+            caption=post.caption,
+        )
+        container_id = container_data.get("id")
+        if not container_id:
+            raise ValueError("Meta did not return an Instagram media container ID.")
+    else:
+        child_container_ids = []
+        for image_file in images:
+            image_url = get_public_image_url(post, image_file=image_file)
+            child_data = create_instagram_image_container(
+                instagram_account_id=account.external_id,
+                page_access_token=account.access_token,
+                image_url=image_url,
+                is_carousel_item=True,
+            )
+            child_container_id = child_data.get("id")
+            if not child_container_id:
+                raise ValueError(
+                    "Meta did not return an Instagram carousel item container ID."
+                )
+            wait_for_instagram_container(
+                child_container_id,
+                account.access_token,
+            )
+            child_container_ids.append(child_container_id)
+
+        carousel_data = create_instagram_carousel_container(
+            instagram_account_id=account.external_id,
+            page_access_token=account.access_token,
+            child_container_ids=child_container_ids,
+            caption=post.caption,
+        )
+        container_id = carousel_data.get("id")
+        if not container_id:
+            raise ValueError("Meta did not return an Instagram carousel container ID.")
+
+    if result is not None:
+        result.container_id = container_id
+        result.save(update_fields=["container_id", "updated_at"])
+
+    wait_for_instagram_container(container_id, account.access_token)
+
     publish_data = publish_instagram_container(
         instagram_account_id=account.external_id,
         page_access_token=account.access_token,
@@ -146,6 +198,56 @@ def publish_instagram_image(post, account, result=None):
     if not external_post_id:
         raise ValueError("Meta did not return an Instagram media ID.")
     return container_id, external_post_id
+
+
+def publish_instagram_image(post, account, result=None):
+    """Backwards-compatible name for the one-or-many image publisher."""
+    return publish_instagram_images(post, account, result=result)
+
+
+def publish_facebook_images(post, account, images):
+    page_id = account.page_id or account.external_id
+    if len(images) == 1:
+        image_file = images[0]
+        with image_file.open("rb") as opened_image:
+            data = publish_facebook_photo_post(
+                page_id=page_id,
+                page_access_token=account.access_token,
+                image_file=opened_image,
+                filename=PurePosixPath(image_file.name).name,
+                content_type=(
+                    mimetypes.guess_type(image_file.name)[0]
+                    or "application/octet-stream"
+                ),
+                message=post.caption,
+            )
+        return data, data.get("id", "")
+
+    photo_ids = []
+    for image_file in images:
+        with image_file.open("rb") as opened_image:
+            upload_data = upload_facebook_unpublished_photo(
+                page_id=page_id,
+                page_access_token=account.access_token,
+                image_file=opened_image,
+                filename=PurePosixPath(image_file.name).name,
+                content_type=(
+                    mimetypes.guess_type(image_file.name)[0]
+                    or "application/octet-stream"
+                ),
+            )
+        photo_id = upload_data.get("id")
+        if not photo_id:
+            raise ValueError("Meta did not return a Facebook photo ID.")
+        photo_ids.append(photo_id)
+
+    data = publish_facebook_multi_photo_post(
+        page_id=page_id,
+        page_access_token=account.access_token,
+        photo_ids=photo_ids,
+        message=post.caption,
+    )
+    return data, photo_ids[0]
 
 
 def publish_target(post, account):
@@ -174,20 +276,10 @@ def publish_target(post, account):
 
     try:
         if account.platform == SocialAccount.PLATFORM_FACEBOOK:
-            if post.image:
-                with post.image.open("rb") as image_file:
-                    data = publish_facebook_photo_post(
-                        page_id=account.page_id or account.external_id,
-                        page_access_token=account.access_token,
-                        image_file=image_file,
-                        filename=PurePosixPath(post.image.name).name,
-                        content_type=(
-                            mimetypes.guess_type(post.image.name)[0]
-                            or "application/octet-stream"
-                        ),
-                        message=post.caption,
-                    )
-                result.external_media_id = data.get("id", "")
+            images = get_post_images(post)
+            if images:
+                data, first_media_id = publish_facebook_images(post, account, images)
+                result.external_media_id = first_media_id
                 result.external_post_id = data.get("post_id") or data.get("id", "")
             else:
                 data = publish_facebook_feed_post(
@@ -199,7 +291,7 @@ def publish_target(post, account):
                 result.external_media_id = ""
             result.container_id = ""
         elif account.platform == SocialAccount.PLATFORM_INSTAGRAM:
-            result.container_id, result.external_post_id = publish_instagram_image(
+            result.container_id, result.external_post_id = publish_instagram_images(
                 post,
                 account,
                 result=result,

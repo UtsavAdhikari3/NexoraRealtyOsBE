@@ -30,7 +30,7 @@ Agent profiles include contact details, profile image, designation, location, ex
 
 ## Public website APIs
 
-Public routes only expose active, paid, non-expired agencies and available published properties.
+Public routes only expose websites for active, paid, non-expired agencies that are published. Every public property consumer uses the same eligibility policy: the property must be published, fresh, free of pending republish approval, and in `available`, `reserved`, or `under_negotiation` status.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -50,7 +50,11 @@ Public routes only expose active, paid, non-expired agencies and available publi
 | POST | `/api/public/agencies/{slug}/submissions/` | Contact, inquiry, valuation, newsletter, guide, career, or demo submission |
 | POST | `/api/public/agencies/{slug}/agents/{id}/reviews/` | Submit an agent review for moderation |
 
-Supported listing query parameters include `property_type`, `purpose`, `location`, `province`, `district`, `city`, `price_min`, `price_max`, `bedrooms`, `bathrooms`, `furnishing_status`, `facing_direction`, `land_area_min`, `land_area_max`, `road_access_min`, `featured`, `search`, and `ordering` (`price`, `-price`, `newest`, `oldest`).
+The property list is page-number paginated (`page`, optional `page_size`, default 24, maximum 60) and returns `{count,next,previous,results}`. `results` use the lightweight card contract with one `primary_image`; property detail retains the rich response.
+
+Supported listing query parameters include `property_type`, `purpose` (`sale`, `rent`, or `lease`), `location`, structured location fields, price/room/area/road/map filters, `featured`, `search`, `assigned_agent`, a maximum of 24 comma-separated `ids`, and `ordering` (`latest`, `featured`, `price_asc`, `price_desc`, or `oldest`; legacy aliases remain accepted). `ids` preserves requested order unless explicit ordering is supplied. Invalid or cross-agency agent IDs return 400.
+
+`filter-options/` returns eligible-inventory counts in `summary`, `property_types`, `purposes`, and grouped `locations`. `similar/` returns `{count,results}` with up to six lightweight cards ranked deterministically by purpose, type, location, price, type-appropriate size/bedrooms, featured status, and recency.
 
 Send `X-Visitor-ID` with anonymous requests when the frontend has a first-party visitor identifier. Public submissions normalize Nepal phone formats and reuse an active lead within the same agency when phone or email matches.
 
@@ -61,10 +65,10 @@ Send `X-Visitor-ID` with anonymous requests when the frontend has a first-party 
 | GET/POST | `/api/properties/` | List/create inventory |
 | GET/PATCH/DELETE | `/api/properties/{id}/` | Manage property |
 | GET | `/api/properties/filter-options/` | Dashboard filter values |
-| GET/POST | `/api/properties/{id}/media/` | List/upload media |
-| GET/PATCH/DELETE | `/api/properties/media/{id}/` | Manage media |
+| GET/POST | `/api/properties/{id}/media/` | List/upload ordered media; accepts `alt_text` and `is_public` |
+| GET/PATCH/DELETE | `/api/properties/media/{id}/` | Manage media, public visibility, and primary status |
 
-Only `available` properties can remain published. Agents create drafts assigned to themselves; owners/managers control publication and deletion.
+Only public statuses can remain published. Agents create drafts assigned to themselves; owners/managers control publication and deletion. Uploaded images are decoded and validated, dimensions are bounded, and the database permits only one primary media row per property. Public detail responses include only `is_public` images/videos/reels in primary/sort order; documents are private by default at the public API boundary.
 
 ## Leads and CRM
 
@@ -190,7 +194,9 @@ Additional endpoints:
 | GET | `/api/operations/admin/summary/` | Super-admin platform metrics |
 | GET/PATCH | `/api/operations/platform-agencies/{id}/` | Super-admin agency controls |
 
-Customer endpoints live under `/api/public/agencies/{slug}/`. Register or log in under `customers/`, then send the returned token in `X-Customer-Token` for saved properties and saved searches. Public appointment availability and booking use `appointments/`. Canonical public listing lookup uses `/api/public/agencies/by-slug/{slug}/listings/{share_slug}/`.
+Customer endpoints live under `/api/public/agencies/{slug}/`. Register or log in under `customers/`, then send the returned token in `X-Customer-Token` for saved properties and saved searches. Saved-property reads and writes use the authoritative public eligibility policy. Public appointment availability and booking use `appointments/`; POST accepts only an eligible same-agency property and active same-agency agent, forces `requested` status, and is throttled. Canonical public listing lookup uses `/api/public/agencies/by-slug/{slug}/listings/{share_slug}/` and the same eligibility policy.
+
+Public inquiry, property event, site-visit, generic submission, saved-property, appointment, distribution-link, and saved-search alert property references all use the same public eligibility selector. Public event metadata is limited to a 2 KB JSON object; generic submission metadata to a 4 KB JSON object and message text to 8 KB. Site-visit preferred times must be in the future.
 
 ## Agency website creator
 
@@ -202,9 +208,20 @@ Owners and managers build the public agency storefront using a separate draft co
 | PATCH | `/api/agencies/me/website-onboarding/` | Save profile fields, brand uploads, and `website_draft_config` |
 | POST | `/api/agencies/me/website/publish/` | Publish a complete draft for a paid agency |
 | POST | `/api/agencies/me/website/unpublish/` | Remove the site from public discovery while retaining content |
+| GET | `/api/agencies/me/website/versions/` | List immutable publish history |
+| GET | `/api/agencies/me/website/versions/{version}/` | Read a published snapshot |
+| POST | `/api/agencies/me/website/versions/{version}/restore/` | Republish a historical snapshot as a new version |
+| GET/POST | `/api/agencies/me/website/domains/` | List or claim normalized custom domains |
+| POST | `/api/agencies/me/website/domains/{id}/verify/` | Check the exact DNS TXT ownership challenge |
+| POST | `/api/agencies/me/website/domains/{id}/primary/` | Select a verified active canonical domain |
+| DELETE | `/api/agencies/me/website/domains/{id}/` | Release a claimed domain |
 | GET | `/api/public/agencies/website-preview/?token=...` | Return an unpublished draft for a valid 24-hour signed preview token |
+| GET | `/api/public/agencies/{license}/sitemap.xml` | Tenant sitemap from enabled pages and public inventory |
+| GET | `/api/public/agencies/{license}/robots.txt` | Tenant indexing policy and canonical sitemap reference |
 
-`website_draft_config` supports `tagline`, `hero_eyebrow`, `hero_title`, `hero_subtitle`, `mission`, `story`, `secondary_color`, `accent_color`, `services`, `statistics`, `testimonials`, and `faqs`. See `docs/WEBSITE_ONBOARDING.md` for validation and deployment configuration.
+Autosave PATCH may use `{ "base_revision": 4, "changes": { ... } }`. A stale base returns `409` with `current_revision` and the current serialized editor state. Arrays replace atomically; nested objects merge recursively. The response includes `template_capabilities`, revision metadata, and readiness capability errors. Public bootstrap responses include `canonical_base_url`, support `ETag`/`If-None-Match`, and use short revalidation caching. Property detail includes `canonical_url`.
+
+Domain verification proves control only. The hosting platform must still provision host routing and TLS. See `docs/WEBSITE_ONBOARDING.md` for validation and deployment configuration.
 
 ## Error behavior
 

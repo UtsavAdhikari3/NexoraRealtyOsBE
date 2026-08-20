@@ -99,6 +99,8 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
     linkedin_url = models.URLField(blank=True, default="")
     instagram_url = models.URLField(blank=True, default="")
     facebook_url = models.URLField(blank=True, default="")
+    show_phone_publicly = models.BooleanField(default=True)
+    show_email_publicly = models.BooleanField(default=True)
 
     profile_updated_at = models.DateTimeField(auto_now=True)
 

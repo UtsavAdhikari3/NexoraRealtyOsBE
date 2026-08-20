@@ -67,7 +67,7 @@ class ListingFreshnessAPITests(APITestCase):
         Property.objects.filter(pk=self.property.pk).update(listing_expires_at=expired_at, is_published=True)
         public_url = reverse("public-property-list", kwargs={"license_number": self.agency.license_number})
         self.client.force_authenticate(user=None)
-        self.assertEqual(self.client.get(public_url).data, [])
+        self.assertEqual(self.client.get(public_url).data["results"], [])
         process_listing_freshness()
         self.property.refresh_from_db()
         self.assertFalse(self.property.is_published)

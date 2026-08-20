@@ -1,9 +1,10 @@
-from django.db.models import F, Q
+from django.db.models import Case, Count, F, IntegerField, Prefetch, Q, Value, When
 from django.shortcuts import redirect
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
 
 from rest_framework import generics
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -16,10 +17,14 @@ from drf_spectacular.utils import (
 )
 from drf_spectacular.types import OpenApiTypes
 
-from .models import Property, PropertyDistributionLink, PropertyEvent
+from .models import Property, PropertyDistributionLink, PropertyEvent, PropertyMedia
+from agencies.public_selectors import get_public_agency
+from agencies.website_urls import add_url_query
 from .area import convert_area
+from .public_selectors import public_properties
 from .public_serializers import (
     PublicPropertyEventSerializer,
+    PublicPropertyCardSerializer,
     PublicPropertySerializer,
     PublicPropertyInquirySerializer,
 )
@@ -102,6 +107,19 @@ PUBLIC_PROPERTY_FILTER_PARAMETERS = [
 ]
 
 
+class PublicPropertyPagination(PageNumberPagination):
+    page_size = 24
+    page_size_query_param = "page_size"
+    max_page_size = 60
+
+
+def public_media_queryset():
+    return PropertyMedia.objects.filter(
+        is_public=True,
+        media_type__in=["image", "video", "reel"],
+    ).order_by("-is_primary", "sort_order", "created_at")
+
+
 class PublicDistributionLinkRedirectView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -114,6 +132,11 @@ class PublicDistributionLinkRedirectView(APIView):
             code=code,
             is_active=True,
             agency__is_active=True,
+        )
+        property_obj = get_object_or_404(
+            public_properties(),
+            pk=link.property_id,
+            agency_id=link.agency_id,
         )
         now = timezone.now()
         PropertyDistributionLink.objects.filter(pk=link.pk).update(
@@ -131,34 +154,27 @@ class PublicDistributionLinkRedirectView(APIView):
             utm_campaign=link.campaign,
             metadata={"distribution_code": link.code, "label": link.label},
         )
-        query = urlencode({
+        query = {
             "utm_source": link.source,
             "utm_medium": link.medium,
             "utm_campaign": link.campaign,
             "nexora_link": link.code,
-        })
-        return redirect(f"{canonical_property_url(link.property)}?{query}")
+        }
+        return redirect(add_url_query(canonical_property_url(property_obj), query))
 
 
 def get_public_properties_queryset(license_number):
-    return Property.objects.filter(
-        agency__license_number=license_number,
-        agency__payment_status="paid",
-        agency__is_active=True,
-        is_published=True,
-        status__in=["available", "reserved", "under_negotiation"],
-    ).filter(
-        availability_verified_at__isnull=False,
-        listing_expires_at__gt=timezone.now(),
-    ).filter(
-        Q(agency__subscription_expires_at__isnull=True)
-        | Q(agency__subscription_expires_at__gt=timezone.now())
-    ).select_related(
+    agency = get_public_agency(license_number=license_number)
+    return public_properties(agency=agency).select_related(
         "agency",
         "assigned_agent",
         "verification",
     ).prefetch_related(
-        "media",
+        Prefetch(
+            "media",
+            queryset=public_media_queryset(),
+            to_attr="_ordered_public_media",
+        ),
         "verification__documents",
     ).order_by(
         "-is_featured",
@@ -180,7 +196,8 @@ def parse_decimal_filter(value, field_name):
     get=extend_schema(parameters=PUBLIC_PROPERTY_FILTER_PARAMETERS)
 )
 class PublicPropertyListView(generics.ListAPIView):
-    serializer_class = PublicPropertySerializer
+    serializer_class = PublicPropertyCardSerializer
+    pagination_class = PublicPropertyPagination
     permission_classes = [AllowAny]
     authentication_classes = []
 
@@ -219,6 +236,8 @@ class PublicPropertyListView(generics.ListAPIView):
         land_area_unit = self.request.query_params.get("land_area_unit", "aana")
         road_access_min = self.request.query_params.get("road_access_min")
         ordering = self.request.query_params.get("ordering")
+        assigned_agent = self.request.query_params.get("assigned_agent")
+        ids_value = self.request.query_params.get("ids")
         min_lat = self.request.query_params.get("min_lat")
         max_lat = self.request.query_params.get("max_lat")
         min_lng = self.request.query_params.get("min_lng")
@@ -229,6 +248,28 @@ class PublicPropertyListView(generics.ListAPIView):
 
         if purpose and purpose != "all":
             queryset = queryset.filter(purpose=purpose)
+
+        if assigned_agent not in (None, "", "all"):
+            if not str(assigned_agent).isdigit():
+                raise ValidationError({"assigned_agent": "Enter a valid agent ID."})
+            from users.models import AgencyUser
+            agent_id = int(assigned_agent)
+            if not AgencyUser.objects.filter(
+                pk=agent_id,
+                agency__license_number=self.kwargs["license_number"],
+                role=AgencyUser.ROLE_AGENT,
+                is_active=True,
+            ).exists():
+                raise ValidationError({"assigned_agent": "Choose an active agent from this agency."})
+            queryset = queryset.filter(assigned_agent_id=agent_id)
+
+        requested_ids = []
+        if ids_value:
+            raw_ids = [item.strip() for item in ids_value.split(",") if item.strip()]
+            if len(raw_ids) > 24 or any(not item.isdigit() for item in raw_ids):
+                raise ValidationError({"ids": "Provide at most 24 comma-separated property IDs."})
+            requested_ids = list(dict.fromkeys(int(item) for item in raw_ids))
+            queryset = queryset.filter(id__in=requested_ids)
 
         if location and location != "all":
             queryset = queryset.filter(
@@ -319,13 +360,24 @@ class PublicPropertyListView(generics.ListAPIView):
             )
 
         ordering_fields = {
-            "price": "price",
-            "-price": "-price",
-            "newest": "-created_at",
-            "oldest": "created_at",
+            "latest": ("-published_at", "-created_at"),
+            "featured": ("-is_featured", "-published_at", "-created_at"),
+            "price_asc": ("price", "id"),
+            "price_desc": ("-price", "id"),
+            "oldest": ("published_at", "created_at"),
+            # Backwards-compatible aliases.
+            "price": ("price", "id"),
+            "-price": ("-price", "id"),
+            "newest": ("-published_at", "-created_at"),
         }
         if ordering in ordering_fields:
-            queryset = queryset.order_by(ordering_fields[ordering])
+            queryset = queryset.order_by(*ordering_fields[ordering])
+        elif requested_ids:
+            requested_order = Case(
+                *[When(id=value, then=position) for position, value in enumerate(requested_ids)],
+                output_field=IntegerField(),
+            )
+            queryset = queryset.order_by(requested_order)
 
         return queryset
 
@@ -349,16 +401,13 @@ class PublicPropertyShareDetailView(generics.RetrieveAPIView):
     lookup_url_kwarg = "share_slug"
 
     def get_queryset(self):
-        return Property.objects.filter(
-            agency__slug=self.kwargs["slug"],
-            agency__payment_status="paid",
-            agency__is_active=True,
-            is_published=True,
-            status__in=["available", "reserved", "under_negotiation"],
-        ).filter(
-            availability_verified_at__isnull=False,
-            listing_expires_at__gt=timezone.now(),
-        ).select_related("agency", "assigned_agent", "verification").prefetch_related("media", "verification__documents")
+        agency = get_public_agency(slug=self.kwargs["slug"])
+        return public_properties(agency=agency).select_related(
+            "agency", "assigned_agent", "verification"
+        ).prefetch_related(
+            Prefetch("media", queryset=public_media_queryset(), to_attr="_ordered_public_media"),
+            "verification__documents",
+        )
 
 
 class PublicPropertyFilterOptionsView(APIView):
@@ -367,74 +416,57 @@ class PublicPropertyFilterOptionsView(APIView):
     serializer_class = PublicPropertySerializer
 
     def get(self, request, license_number):
-        properties = get_public_properties_queryset(
-            license_number
-        ).select_related(
+        properties = get_public_properties_queryset(license_number).select_related(
             None
-        ).prefetch_related(
-            None
-        ).order_by().values(
-            "province",
-            "district",
-            "city",
-            "neighbourhood",
-            "municipality", "ward_number", "tole",
-        )
+        ).prefetch_related(None).order_by()
 
-        location_values = []
-        seen_locations = set()
+        def counted(field, labels=None):
+            grouped = properties.exclude(**{field: ""}).values(field).annotate(
+                count=Count("id")
+            ).order_by(field)
+            merged = {}
+            for item in grouped:
+                raw = str(item[field] or "").strip()
+                if not raw:
+                    continue
+                key = raw.casefold()
+                if key not in merged:
+                    merged[key] = {"value": raw, "label": (labels or {}).get(raw, raw), "count": 0}
+                merged[key]["count"] += item["count"]
+            return sorted(merged.values(), key=lambda item: item["label"].casefold())
 
-        def add_location(value, location_type):
-            if not value:
-                return
-
-            cleaned_value = value.strip()
-
-            if not cleaned_value:
-                return
-
-            if cleaned_value in seen_locations:
-                return
-
-            seen_locations.add(cleaned_value)
-
-            location_values.append(
-                {
-                    "value": cleaned_value,
-                    "label": cleaned_value,
-                    "type": location_type,
-                }
-            )
-
-        for property_values in properties:
-            add_location(property_values["province"], "province")
-            add_location(property_values["district"], "district")
-            add_location(property_values["city"], "city")
-            add_location(property_values["neighbourhood"], "neighbourhood")
-            add_location(property_values["municipality"], "municipality")
-            add_location(property_values["tole"], "tole")
+        purpose_counts = {item["purpose"]: item["count"] for item in properties.values("purpose").annotate(count=Count("id"))}
+        property_type_labels = dict(Property.PROPERTY_TYPES)
+        purpose_labels = dict(Property.PURPOSES)
+        from users.models import AgencyUser
+        agency = get_public_agency(license_number=license_number)
 
         return Response(
             {
-                "property_types": [
-                    {
-                        "value": value,
-                        "label": label
-                    }
-                    for value, label in Property.PROPERTY_TYPES
-                ],
-                "purposes": [
-                    {
-                        "value": value,
-                        "label": label
-                    }
-                    for value, label in Property.PURPOSES
-                ],
+                "summary": {
+                    "total": properties.count(),
+                    "sale": purpose_counts.get("sale", 0),
+                    "rent": purpose_counts.get("rent", 0),
+                    "lease": purpose_counts.get("lease", 0),
+                    "featured": properties.filter(is_featured=True).count(),
+                    "agents": AgencyUser.objects.filter(
+                        agency=agency, role=AgencyUser.ROLE_AGENT, is_active=True
+                    ).count(),
+                },
+                "property_types": counted("property_type", property_type_labels),
+                "purposes": counted("purpose", purpose_labels),
                 "land_use_classifications": [{"value": value, "label": label} for value, label in Property.LAND_USE_CHOICES],
                 "area_units": [{"value": value, "label": label} for value, label in Property.AREA_UNITS],
                 "road_types": [{"value": value, "label": label} for value, label in Property.ROAD_TYPE_CHOICES],
                 "plot_shapes": [{"value": value, "label": label} for value, label in Property.PLOT_SHAPE_CHOICES],
-                "locations": location_values,
+                "locations": {
+                    "provinces": counted("province"),
+                    "districts": counted("district"),
+                    "cities": counted("city"),
+                    "municipalities": counted("municipality"),
+                    "neighbourhoods": counted("neighbourhood"),
+                    "toles": counted("tole"),
+                },
             }
         )
     
@@ -538,7 +570,7 @@ class PublicPropertyInquiryView(APIView):
 class PublicSimilarPropertiesView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    serializer_class = PublicPropertySerializer
+    serializer_class = PublicPropertyCardSerializer
 
     def get(self, request, license_number, property_id):
         current_property = get_object_or_404(
@@ -546,18 +578,47 @@ class PublicSimilarPropertiesView(APIView):
             id=property_id,
         )
 
-        similar_properties = get_public_properties_queryset(
-            license_number
-        ).exclude(
-            id=current_property.id
-        ).filter(
-            Q(property_type=current_property.property_type)
-            | Q(purpose=current_property.purpose)
-            | Q(city__iexact=current_property.city)
-            | Q(district__iexact=current_property.district)
-        ).distinct()[:6]
+        candidates = get_public_properties_queryset(license_number).exclude(id=current_property.id)
 
-        serializer = PublicPropertySerializer(
+        score = Case(
+            When(purpose=current_property.purpose, then=Value(40)),
+            default=Value(0), output_field=IntegerField(),
+        ) + Case(
+            When(property_type=current_property.property_type, then=Value(30)),
+            default=Value(0), output_field=IntegerField(),
+        )
+        if current_property.municipality:
+            score += Case(When(municipality__iexact=current_property.municipality, then=Value(20)), default=Value(0), output_field=IntegerField())
+        if current_property.city:
+            score += Case(When(city__iexact=current_property.city, then=Value(15)), default=Value(0), output_field=IntegerField())
+        if current_property.district:
+            score += Case(When(district__iexact=current_property.district, then=Value(10)), default=Value(0), output_field=IntegerField())
+        if current_property.price:
+            score += Case(
+                When(price__gte=current_property.price * Decimal("0.75"), price__lte=current_property.price * Decimal("1.25"), then=Value(15)),
+                When(price__gte=current_property.price * Decimal("0.50"), price__lte=current_property.price * Decimal("1.50"), then=Value(8)),
+                default=Value(0), output_field=IntegerField(),
+            )
+        if current_property.property_type != "land" and current_property.bedrooms:
+            score += Case(
+                When(bedrooms__gte=max(0, current_property.bedrooms - 1), bedrooms__lte=current_property.bedrooms + 1, then=Value(8)),
+                default=Value(0), output_field=IntegerField(),
+            )
+        if current_property.property_type == "land" and current_property.land_area_sqft:
+            score += Case(
+                When(
+                    land_area_sqft__gte=current_property.land_area_sqft * Decimal("0.67"),
+                    land_area_sqft__lte=current_property.land_area_sqft * Decimal("1.50"),
+                    then=Value(8),
+                ),
+                default=Value(0), output_field=IntegerField(),
+            )
+        score += Case(When(is_featured=True, then=Value(2)), default=Value(0), output_field=IntegerField())
+        similar_properties = candidates.annotate(similarity_score=score).order_by(
+            "-similarity_score", "-published_at", "-created_at"
+        )[:6]
+
+        serializer = PublicPropertyCardSerializer(
             similar_properties,
             many=True,
             context={

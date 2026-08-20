@@ -66,7 +66,7 @@ class SocialPostListCreateView(generics.ListCreateAPIView):
                 "agency",
                 "property",
                 "created_by",
-            )
+            ).prefetch_related("media_items")
 
         if not user.agency:
             return SocialPost.objects.none()
@@ -77,7 +77,7 @@ class SocialPostListCreateView(generics.ListCreateAPIView):
             "agency",
             "property",
             "created_by",
-        )
+        ).prefetch_related("media_items")
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -103,7 +103,7 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
                 "agency",
                 "property",
                 "created_by",
-            )
+            ).prefetch_related("media_items")
 
         if not user.agency:
             return SocialPost.objects.none()
@@ -114,7 +114,7 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
             "agency",
             "property",
             "created_by",
-        )
+        ).prefetch_related("media_items")
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
@@ -127,7 +127,7 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
         serializer.is_valid(raise_exception=True)
 
         published_results = instance.publish_results.filter(status="published")
-        if "image" in serializer.validated_data and published_results.exists():
+        if serializer.media_changed and published_results.exists():
             return Response(
                 {
                     "detail": (
@@ -292,7 +292,11 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
                     status=status.HTTP_409_CONFLICT,
                 )
             try:
-                delete_target_id = publish_result.external_media_id
+                media_count = instance.media_items.count()
+                if media_count > 1:
+                    delete_target_id = publish_result.external_post_id
+                else:
+                    delete_target_id = publish_result.external_media_id
                 if instance.image and not delete_target_id:
                     delete_target_id = get_facebook_post_photo_id(
                         post_id=publish_result.external_post_id,
@@ -341,7 +345,9 @@ class SocialPostPublishView(APIView):
 
     @extend_schema(request=SocialPublishRequestSerializer, responses=SocialPostSerializer)
     def post(self, request, pk):
-        queryset = SocialPost.objects.select_related("social_account")
+        queryset = SocialPost.objects.select_related("social_account").prefetch_related(
+            "media_items"
+        )
         if request.user.role != "super_admin":
             queryset = queryset.filter(agency=request.user.agency)
         post = get_object_or_404(queryset, pk=pk)

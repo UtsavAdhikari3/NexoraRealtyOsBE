@@ -12,6 +12,13 @@ from .views import (
     WebsitePreviewView,
     WebsitePublishView,
     WebsiteUnpublishView,
+    WebsiteVersionListView,
+    WebsiteVersionDetailView,
+    WebsiteVersionRestoreView,
+    AgencyDomainListCreateView,
+    AgencyDomainVerifyView,
+    AgencyDomainPrimaryView,
+    AgencyDomainDetailView,
 )
 
 
@@ -24,6 +31,13 @@ urlpatterns = [
     path("me/website/preview/", WebsitePreviewView.as_view(), name="website-preview"),
     path("me/website/publish/", WebsitePublishView.as_view(), name="website-publish"),
     path("me/website/unpublish/", WebsiteUnpublishView.as_view(), name="website-unpublish"),
+    path("me/website/versions/", WebsiteVersionListView.as_view(), name="website-version-list"),
+    path("me/website/versions/<int:version>/", WebsiteVersionDetailView.as_view(), name="website-version-detail"),
+    path("me/website/versions/<int:version>/restore/", WebsiteVersionRestoreView.as_view(), name="website-version-restore"),
+    path("me/website/domains/", AgencyDomainListCreateView.as_view(), name="website-domain-list"),
+    path("me/website/domains/<int:pk>/", AgencyDomainDetailView.as_view(), name="website-domain-detail"),
+    path("me/website/domains/<int:pk>/verify/", AgencyDomainVerifyView.as_view(), name="website-domain-verify"),
+    path("me/website/domains/<int:pk>/primary/", AgencyDomainPrimaryView.as_view(), name="website-domain-primary"),
     path("localization/", LocalizationView.as_view(), name="agency-localization"),
 ]
 

@@ -9,6 +9,7 @@ from .models import Agency
 from leads.services import normalize_phone
 from .localization import format_nepal_address, format_nepal_phone
 from .website_onboarding import default_website_config
+from .website_urls import agency_website_url
 
 User = get_user_model()
 
@@ -36,6 +37,8 @@ class PublicAgencySerializer(serializers.ModelSerializer):
     viber_number = serializers.SerializerMethodField()
     default_language = serializers.SerializerMethodField()
     website_config_version = serializers.IntegerField(read_only=True)
+    custom_domain = serializers.SerializerMethodField()
+    canonical_base_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Agency
@@ -61,6 +64,7 @@ class PublicAgencySerializer(serializers.ModelSerializer):
             "seo_title",
             "seo_description",
             "custom_domain",
+            "canonical_base_url",
             "website_template",
             "website_config",
             "website_config_version",
@@ -84,6 +88,15 @@ class PublicAgencySerializer(serializers.ModelSerializer):
     def _config(self, obj):
         # Normal public requests must never fall back to the draft.
         return obj.website_published_config or obj.website_config or default_website_config()
+
+    def get_custom_domain(self, obj):
+        primary = obj.website_domains.filter(
+            status="verified", is_active=True, is_primary=True
+        ).only("domain").first()
+        return primary.domain if primary else ""
+
+    def get_canonical_base_url(self, obj):
+        return agency_website_url(obj)
 
     def _media_url(self, value):
         if not value:
@@ -141,6 +154,8 @@ class PublicAgencySerializer(serializers.ModelSerializer):
 
 
 class PublicAgentSerializer(serializers.ModelSerializer):
+    phone = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
     profile_image_url = serializers.SerializerMethodField()
     profile_completed = serializers.BooleanField(
         source="agent_profile_completed",
@@ -193,6 +208,12 @@ class PublicAgentSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.profile_image.url)
 
         return obj.profile_image.url
+
+    def get_phone(self, obj):
+        return obj.phone if obj.show_phone_publicly else None
+
+    def get_email(self, obj):
+        return obj.email if obj.show_email_publicly else None
 
     def get_assigned_profile_properties(self, obj):
         if not hasattr(obj, "_agent_profile_properties"):

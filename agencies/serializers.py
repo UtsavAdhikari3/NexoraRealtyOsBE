@@ -3,20 +3,68 @@ from urllib.parse import urljoin
 from rest_framework import serializers
 from django.conf import settings
 from django.core import signing
-from .models import Agency
+from .models import Agency, AgencyDomain, WebsiteVersion
 from .localization import (
     format_nepal_address, format_nepal_phone, resolved_message_templates,
 )
 from .website_onboarding import (
+    advance_website_draft_revision,
     materialize_website_config,
+    merge_website_changes,
     validate_website_config,
     website_readiness,
 )
+from .website_urls import agency_website_url
+from .template_capabilities import get_template_capabilities
+from .domains import normalize_domain, routing_record, verification_record
 
 class TestMarkAgencyPaidSerializer(serializers.Serializer):
     email = serializers.EmailField()
     license_number = serializers.CharField(max_length=100)
     verify_email = serializers.BooleanField(default=True)
+
+
+class WebsiteVersionSerializer(serializers.ModelSerializer):
+    published_by_name = serializers.CharField(source="published_by.full_name", read_only=True, allow_null=True)
+    restored_from_version = serializers.IntegerField(source="restored_from.version", read_only=True, allow_null=True)
+    is_current = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WebsiteVersion
+        fields = [
+            "id", "version", "template_key", "schema_version", "config",
+            "published_at", "published_by", "published_by_name",
+            "restored_from", "restored_from_version", "is_current",
+        ]
+        read_only_fields = fields
+
+    def get_is_current(self, obj):
+        return obj.agency.website_config_version == obj.version and obj.agency.is_website_published
+
+
+class AgencyDomainSerializer(serializers.ModelSerializer):
+    verification_record = serializers.SerializerMethodField()
+    routing_record = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AgencyDomain
+        fields = [
+            "id", "domain", "status", "is_active", "is_primary", "verified_at",
+            "last_checked_at", "created_at", "verification_record", "routing_record",
+        ]
+        read_only_fields = [
+            "id", "status", "is_active", "is_primary", "verified_at",
+            "last_checked_at", "created_at", "verification_record", "routing_record",
+        ]
+
+    def validate_domain(self, value):
+        return normalize_domain(value)
+
+    def get_verification_record(self, obj):
+        return verification_record(obj)
+
+    def get_routing_record(self, obj):
+        return routing_record(obj)
 
 class AgencySerializer(serializers.ModelSerializer):
     resolved_message_templates = serializers.SerializerMethodField()
@@ -55,6 +103,9 @@ class AgencySerializer(serializers.ModelSerializer):
             "website_onboarding_step",
             "website_completion_percentage",
             "website_config_version",
+            "website_draft_revision",
+            "website_draft_updated_at",
+            "website_draft_updated_by",
             "website_onboarding_completed_at",
             "website_published_at",
             "default_language",
@@ -100,6 +151,10 @@ class AgencySerializer(serializers.ModelSerializer):
             "website_draft_config",
             "website_completion_percentage",
             "website_config_version",
+            "website_draft_revision",
+            "website_draft_updated_at",
+            "website_draft_updated_by",
+            "custom_domain",
         ]
 
     def get_resolved_message_templates(self, obj) -> dict:
@@ -132,6 +187,7 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
     website_url = serializers.SerializerMethodField()
     preview_url = serializers.SerializerMethodField()
     media_urls = serializers.SerializerMethodField()
+    template_capabilities = serializers.SerializerMethodField()
 
     class Meta:
         model = Agency
@@ -139,6 +195,7 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "slug",
+            "license_number",
             "logo",
             "cover_image",
             "about",
@@ -168,6 +225,9 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
             "website_onboarding_step",
             "website_completion_percentage",
             "website_config_version",
+            "website_draft_revision",
+            "website_draft_updated_at",
+            "website_draft_updated_by",
             "website_onboarding_completed_at",
             "website_published_at",
             "is_website_published",
@@ -177,10 +237,12 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
             "website_url",
             "preview_url",
             "media_urls",
+            "template_capabilities",
         ]
         read_only_fields = [
             "id",
             "slug",
+            "license_number",
             "website_template",
             "website_onboarding_status",
             "website_onboarding_completed_at",
@@ -189,12 +251,16 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
             "website_published_config",
             "website_completion_percentage",
             "website_config_version",
+            "website_draft_revision",
+            "website_draft_updated_at",
+            "website_draft_updated_by",
             "completion_percentage",
             "is_ready_to_publish",
             "missing_fields",
             "website_url",
             "preview_url",
             "media_urls",
+            "template_capabilities",
         ]
 
     def validate_primary_color(self, value):
@@ -207,13 +273,17 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Enter a six-digit hex colour such as #496B5A.")
         return value
 
+    def get_template_capabilities(self, obj):
+        return get_template_capabilities(obj.website_template)
+
     def validate_website_onboarding_step(self, value):
         if value < 1 or value > 9:
             raise serializers.ValidationError("Onboarding step must be between 1 and 9.")
         return value
 
     def validate_website_draft_config(self, value):
-        cleaned = validate_website_config(value)
+        current = self.instance.website_draft_config if self.instance else {}
+        cleaned = validate_website_config(merge_website_changes(current, value))
         if not self.instance:
             return cleaned
         if cleaned["featured_property_mode"] == "manual":
@@ -277,8 +347,12 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
         instance.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED if was_completed else (
             Agency.WEBSITE_ONBOARDING_READY if readiness["is_ready_to_publish"] else Agency.WEBSITE_ONBOARDING_IN_PROGRESS
         )
+        revision_fields = advance_website_draft_revision(
+            instance, self.context.get("request").user if self.context.get("request") else None
+        )
         instance.save(update_fields=[
             "website_draft_config", "website_completion_percentage", "website_onboarding_status",
+            *revision_fields,
         ])
         instance._website_readiness = readiness
         return instance
@@ -298,11 +372,10 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
         return self._readiness(obj)["missing_fields"]
 
     def get_website_url(self, obj):
-        base = getattr(settings, "STOREFRONT_PUBLIC_URL", "http://localhost:3000").rstrip("/")
-        return f"{base}/agency/{obj.slug}"
+        return agency_website_url(obj)
 
     def get_preview_url(self, obj):
-        base = getattr(settings, "STOREFRONT_PUBLIC_URL", "http://localhost:3000").rstrip("/")
+        base = getattr(settings, "STOREFRONT_PREVIEW_URL", "http://localhost:3000").rstrip("/")
         token = signing.dumps({"agency_id": obj.id}, salt="agency-website-preview", compress=True)
         return f"{base}/website-preview/{token}"
 

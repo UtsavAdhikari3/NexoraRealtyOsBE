@@ -1,11 +1,46 @@
+import json
+
+from django.db import transaction
+from PIL import Image, UnidentifiedImageError
 from rest_framework import serializers
 
 from properties.models import Property
 from .models import (
     SOCIAL_PUBLISH_PLATFORM_CHOICES,
     SocialPost,
+    SocialPostMedia,
     SocialPublishResult,
 )
+
+
+class MultipartListField(serializers.ListField):
+    """Accept repeated multipart keys as a regular serializer list."""
+
+    def get_value(self, dictionary):
+        if hasattr(dictionary, "getlist"):
+            values = dictionary.getlist(self.field_name)
+            if values:
+                return values
+        return super().get_value(dictionary)
+
+
+class MultipartJSONField(serializers.JSONField):
+    """Decode JSON strings sent inside multipart form data."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (TypeError, ValueError) as exc:
+                raise serializers.ValidationError("Enter valid JSON.") from exc
+        return super().to_internal_value(data)
+
+
+class SocialPostMediaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SocialPostMedia
+        fields = ["id", "image", "position"]
+        read_only_fields = fields
 
 
 class SocialPublishResultSerializer(serializers.ModelSerializer):
@@ -33,6 +68,18 @@ class SocialPostSerializer(serializers.ModelSerializer):
     property_title = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     publish_results = SocialPublishResultSerializer(many=True, read_only=True)
+    media = SocialPostMediaSerializer(
+        source="media_items",
+        many=True,
+        read_only=True,
+    )
+    images = MultipartListField(
+        child=serializers.ImageField(),
+        required=False,
+        write_only=True,
+        max_length=SocialPostMedia.MAX_IMAGES_PER_POST,
+    )
+    media_order = MultipartJSONField(required=False, write_only=True)
     target_platforms = serializers.ListField(
         child=serializers.ChoiceField(
             choices=SOCIAL_PUBLISH_PLATFORM_CHOICES
@@ -57,6 +104,9 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "target_platforms",
             "caption",
             "image",
+            "media",
+            "images",
+            "media_order",
             "status",
             "scheduled_at",
             "published_at",
@@ -110,7 +160,186 @@ class SocialPostSerializer(serializers.ModelSerializer):
     def validate_target_platforms(self, value):
         return list(dict.fromkeys(value))
 
+    def validate_images(self, images):
+        for image_file in images:
+            if image_file.size > 10 * 1024 * 1024:
+                raise serializers.ValidationError(
+                    f"{image_file.name} exceeds the 10 MB image limit."
+                )
+
+            try:
+                image_file.seek(0)
+                with Image.open(image_file) as image:
+                    width, height = image.size
+                    image.verify()
+                image_file.seek(0)
+            except (UnidentifiedImageError, OSError, ValueError) as exc:
+                raise serializers.ValidationError(
+                    f"{image_file.name} is not a valid image."
+                ) from exc
+
+            if width < 320:
+                raise serializers.ValidationError(
+                    f"{image_file.name} must be at least 320 pixels wide."
+                )
+            aspect_ratio = width / height
+            if not 0.8 <= aspect_ratio <= 1.91:
+                raise serializers.ValidationError(
+                    f"{image_file.name} must have an aspect ratio between "
+                    "4:5 and 1.91:1."
+                )
+        return images
+
+    def _prepare_media_plan(self, attrs):
+        existing_items = list(self.instance.media_items.all()) if self.instance else []
+        existing_ids = {item.id for item in existing_items}
+        has_legacy_image = bool(
+            self.instance and self.instance.image and not existing_items
+        )
+        images = list(attrs.get("images", []))
+        legacy_image_supplied = "image" in attrs
+
+        if legacy_image_supplied:
+            legacy_image = attrs.get("image")
+            images = [legacy_image] if legacy_image else []
+            attrs["images"] = images
+
+        if "media_order" in attrs:
+            order = attrs["media_order"]
+            if not isinstance(order, list):
+                raise serializers.ValidationError(
+                    {"media_order": "Media order must be a JSON array."}
+                )
+        elif legacy_image_supplied:
+            order = ["new:0"] if images else []
+        else:
+            order = [f"existing:{item.id}" for item in existing_items]
+            if has_legacy_image:
+                order.append("legacy:0")
+            order.extend(f"new:{index}" for index in range(len(images)))
+
+        if len(order) > SocialPostMedia.MAX_IMAGES_PER_POST:
+            raise serializers.ValidationError(
+                {
+                    "images": (
+                        "A social post can contain at most "
+                        f"{SocialPostMedia.MAX_IMAGES_PER_POST} images."
+                    )
+                }
+            )
+
+        normalized_order = []
+        seen_tokens = set()
+        referenced_new_indexes = set()
+        for token in order:
+            if not isinstance(token, str) or ":" not in token:
+                raise serializers.ValidationError(
+                    {"media_order": "Each media-order item must be a media token."}
+                )
+            kind, raw_identifier = token.split(":", 1)
+            try:
+                identifier = int(raw_identifier)
+            except (TypeError, ValueError) as exc:
+                raise serializers.ValidationError(
+                    {"media_order": f"Invalid media token: {token}."}
+                ) from exc
+
+            normalized_token = f"{kind}:{identifier}"
+            if normalized_token in seen_tokens:
+                raise serializers.ValidationError(
+                    {"media_order": "The same image cannot appear more than once."}
+                )
+            seen_tokens.add(normalized_token)
+
+            if kind == "existing":
+                if identifier not in existing_ids:
+                    raise serializers.ValidationError(
+                        {"media_order": "An existing image does not belong to this post."}
+                    )
+            elif kind == "legacy":
+                if identifier != 0 or not has_legacy_image:
+                    raise serializers.ValidationError(
+                        {"media_order": "This post does not have a legacy cover image."}
+                    )
+            elif kind == "new":
+                if identifier < 0 or identifier >= len(images):
+                    raise serializers.ValidationError(
+                        {"media_order": f"Invalid new-image token: {token}."}
+                    )
+                referenced_new_indexes.add(identifier)
+            else:
+                raise serializers.ValidationError(
+                    {"media_order": f"Unsupported media token: {token}."}
+                )
+            normalized_order.append((kind, identifier))
+
+        if referenced_new_indexes != set(range(len(images))):
+            raise serializers.ValidationError(
+                {"media_order": "Every uploaded image must appear in the media order."}
+            )
+
+        current_order = [("existing", item.id) for item in existing_items]
+        if has_legacy_image:
+            current_order.append(("legacy", 0))
+        self.media_changed = (
+            legacy_image_supplied
+            or bool(images)
+            or normalized_order != current_order
+        )
+        self._media_plan = normalized_order
+
+    def _apply_media_plan(self, post, images):
+        existing_items = {item.id: item for item in post.media_items.all()}
+        retained_ids = {
+            identifier
+            for kind, identifier in self._media_plan
+            if kind == "existing"
+        }
+        removed_items = [
+            item for item_id, item in existing_items.items() if item_id not in retained_ids
+        ]
+        removed_names = {item.image.name for item in removed_items if item.image.name}
+
+        if removed_items:
+            SocialPostMedia.objects.filter(
+                id__in=[item.id for item in removed_items]
+            ).delete()
+
+        ordered_items = []
+        for position, (kind, identifier) in enumerate(self._media_plan):
+            if kind == "existing":
+                item = existing_items[identifier]
+                if item.position != position:
+                    item.position = position
+                    item.save(update_fields=["position"])
+            elif kind == "legacy":
+                item = SocialPostMedia.objects.create(
+                    post=post,
+                    image=post.image.name,
+                    position=position,
+                )
+            else:
+                item = SocialPostMedia.objects.create(
+                    post=post,
+                    image=images[identifier],
+                    position=position,
+                )
+            ordered_items.append(item)
+
+        first_item = ordered_items[0] if ordered_items else None
+        post.image.name = first_item.image.name if first_item else None
+        post.save(update_fields=["image", "updated_at"])
+
+        retained_names = {item.image.name for item in ordered_items if item.image.name}
+        for removed_item in removed_items:
+            name = removed_item.image.name
+            if name and name in removed_names - retained_names:
+                storage = removed_item.image.storage
+                transaction.on_commit(lambda name=name, storage=storage: storage.delete(name))
+
     def validate(self, attrs):
+        self.media_changed = False
+        self._prepare_media_plan(attrs)
         status_value = attrs.get(
             "status",
             self.instance.status if self.instance else SocialPost.STATUS_DRAFT,
@@ -134,6 +363,25 @@ class SocialPostSerializer(serializers.ModelSerializer):
                     {"social_account": "A connected account is required."}
                 )
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        images = validated_data.pop("images", [])
+        validated_data.pop("media_order", None)
+        validated_data.pop("image", None)
+        post = super().create(validated_data)
+        self._apply_media_plan(post, images)
+        return post
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        images = validated_data.pop("images", [])
+        validated_data.pop("media_order", None)
+        validated_data.pop("image", None)
+        post = super().update(instance, validated_data)
+        if self.media_changed:
+            self._apply_media_plan(post, images)
+        return post
 
 
 class SocialPublishRequestSerializer(serializers.Serializer):

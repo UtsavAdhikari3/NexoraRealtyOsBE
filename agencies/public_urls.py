@@ -9,9 +9,12 @@ from .public_views import (
     PublicAgentListView,
     PublicAgentDetailView,
 )
+from .seo_views import PublicRobotsView, PublicSitemapView
 
 
 urlpatterns = [
+    path("agencies/<str:license_number>/sitemap.xml", PublicSitemapView.as_view(), name="public-agency-sitemap"),
+    path("agencies/<str:license_number>/robots.txt", PublicRobotsView.as_view(), name="public-agency-robots"),
     path(
         "agencies/website-preview/",
         PublicAgencyPreviewView.as_view(),

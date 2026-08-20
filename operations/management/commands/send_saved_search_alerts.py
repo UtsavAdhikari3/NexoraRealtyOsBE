@@ -4,9 +4,11 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
 
+from agencies.website_urls import property_website_url
+
 from operations.models import SavedSearch
 from operations.scheduler import scheduled_job
-from properties.models import Property
+from properties.public_selectors import public_properties
 
 
 class Command(BaseCommand):
@@ -24,6 +26,7 @@ class Command(BaseCommand):
                 alerts_enabled=True,
                 agency__is_active=True,
                 agency__payment_status="paid",
+                agency__is_website_published=True,
             ).filter(
                 Q(agency__subscription_expires_at__isnull=True)
                 | Q(agency__subscription_expires_at__gt=timezone.now())
@@ -32,12 +35,8 @@ class Command(BaseCommand):
                 checked += 1
                 checked_at = timezone.now()
                 try:
-                    queryset = Property.objects.filter(
-                        agency=saved.agency,
+                    queryset = public_properties(agency=saved.agency).filter(
                         status="available",
-                        is_published=True,
-                        requires_republish_approval=False,
-                        listing_expires_at__gt=checked_at,
                         created_at__gt=saved.last_notified_at or saved.created_at,
                     )
                     filters = saved.filters or {}
@@ -64,7 +63,7 @@ class Command(BaseCommand):
                     if not matches:
                         continue
                     links = "\n".join(
-                        f"- {item.title}: {getattr(settings, 'STOREFRONT_PUBLIC_URL', 'http://localhost:3000')}/agency/{saved.agency.slug}/properties/{item.share_slug}"
+                        f"- {item.title}: {property_website_url(item)}"
                         for item in matches
                     )
                     send_mail(
