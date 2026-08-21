@@ -1,8 +1,8 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.core import signing
 from urllib.parse import urlparse
 
 from rest_framework import generics, status
@@ -10,7 +10,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Agency
+from .models import Agency, AgencyDomain
+from .public_selectors import get_public_agency, public_agencies
 from .public_serializers import (
     PublicAgencyContactSerializer,
     PublicAgencySerializer,
@@ -23,14 +24,8 @@ User = get_user_model()
 
 
 def get_public_agencies_queryset():
-    return Agency.objects.filter(
-        payment_status=Agency.PAYMENT_PAID,
-        is_active=True,
-        is_website_published=True,
-    ).filter(
-        Q(subscription_expires_at__isnull=True)
-        | Q(subscription_expires_at__gt=timezone.now())
-    )
+    """Compatibility alias for callers moving to the shared selector."""
+    return public_agencies()
 
 
 class PublicAgencyDetailView(generics.RetrieveAPIView):
@@ -42,6 +37,17 @@ class PublicAgencyDetailView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return get_public_agencies_queryset()
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        etag = f'"agency-{instance.pk}-v{instance.website_config_version}"'
+        if request.headers.get("If-None-Match") == etag:
+            response = Response(status=status.HTTP_304_NOT_MODIFIED)
+        else:
+            response = Response(self.get_serializer(instance).data)
+        response["ETag"] = etag
+        response["Cache-Control"] = "public, max-age=60, must-revalidate"
+        return response
 
 
 class PublicAgencySlugDetailView(PublicAgencyDetailView):
@@ -63,10 +69,34 @@ class PublicAgencyDomainDetailView(APIView):
             )
         parsed = urlparse(raw_domain if "://" in raw_domain else f"//{raw_domain}")
         domain = (parsed.hostname or raw_domain).rstrip(".")
-        agency = get_object_or_404(
-            get_public_agencies_queryset(),
-            custom_domain__iexact=domain,
+        claimed = get_object_or_404(
+            AgencyDomain.objects.select_related("agency"),
+            domain=domain,
+            status=AgencyDomain.STATUS_VERIFIED,
+            is_active=True,
         )
+        agency = get_object_or_404(get_public_agencies_queryset(), pk=claimed.agency_id)
+        return Response(self.serializer_class(agency, context={"request": request}).data)
+
+
+class PublicAgencyPreviewView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicAgencySerializer
+
+    def get(self, request):
+        token = request.query_params.get("token", "")
+        try:
+            payload = signing.loads(
+                token,
+                salt="agency-website-preview",
+                max_age=60 * 60 * 24,
+            )
+            agency = Agency.objects.get(pk=payload["agency_id"], is_active=True)
+        except (signing.BadSignature, signing.SignatureExpired, Agency.DoesNotExist, KeyError, TypeError):
+            return Response({"detail": "This website preview link is invalid or expired."}, status=status.HTTP_404_NOT_FOUND)
+
+        agency.website_published_config = agency.website_draft_config or agency.website_published_config or agency.website_config
         return Response(self.serializer_class(agency, context={"request": request}).data)
 
 
@@ -77,10 +107,7 @@ class PublicAgentListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        agency = get_object_or_404(
-            get_public_agencies_queryset(),
-            license_number=self.kwargs["license_number"],
-        )
+        agency = get_public_agency(license_number=self.kwargs["license_number"])
         return User.objects.filter(
             agency=agency,
             role=User.ROLE_AGENT,
@@ -94,10 +121,7 @@ class PublicAgentDetailView(generics.RetrieveAPIView):
     authentication_classes = []
 
     def get_queryset(self):
-        agency = get_object_or_404(
-            get_public_agencies_queryset(),
-            license_number=self.kwargs["license_number"],
-        )
+        agency = get_public_agency(license_number=self.kwargs["license_number"])
         return User.objects.filter(
             agency=agency,
             role=User.ROLE_AGENT,
@@ -113,10 +137,7 @@ class PublicAgencyContactView(APIView):
 
     @transaction.atomic
     def post(self, request, license_number):
-        agency = get_object_or_404(
-            get_public_agencies_queryset(),
-            license_number=license_number,
-        )
+        agency = get_public_agency(license_number=license_number)
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data

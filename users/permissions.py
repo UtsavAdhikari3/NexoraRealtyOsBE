@@ -1,4 +1,4 @@
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import BasePermission, SAFE_METHODS
 
 
 def is_super_admin(user):
@@ -64,6 +64,16 @@ class IsAgencyOwner(BasePermission):
 class IsAgencyOwnerOrManager(BasePermission):
     def has_permission(self, request, view):
         return is_agency_owner_or_manager(request.user)
+
+
+class IsAgencyOwnerOrManagerOrReadOnly(BasePermission):
+    """Allow agency users to read shared configuration, but restrict mutations."""
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return has_agency(request.user) or is_super_admin(request.user)
+
+        return is_agency_owner_or_manager(request.user) or is_super_admin(request.user)
 
 
 class IsAgent(BasePermission):

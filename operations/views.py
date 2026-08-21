@@ -21,11 +21,13 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 
 from agencies.models import Agency
-from agencies.public_views import get_public_agencies_queryset
+from agencies.public_selectors import get_public_agency
 from leads.models import Lead, LeadInteraction
 from leads.services import get_or_create_public_lead
 from properties.models import Property
+from properties.public_selectors import public_properties
 from users.models import AgencyUser
+from users.permissions import IsAgencyOwnerOrManagerOrReadOnly
 from .models import (
     AgentReview, Appointment, AppointmentAvailability, AuditLog, Contact, CustomerProfile,
     CustomFieldDefinition, Deal, Document, Invitation, Lease, Notification,
@@ -33,7 +35,7 @@ from .models import (
     Subscription, SubscriptionPlan, Task,
 )
 from .serializers import (
-    AgentReviewSerializer, AppointmentAvailabilitySerializer, AppointmentSerializer, AuditLogSerializer,
+    AgentReviewSerializer, AppointmentAvailabilitySerializer, AppointmentSerializer, PublicAppointmentSerializer, AuditLogSerializer,
     ContactSerializer, CustomerLoginSerializer, CustomerProfileSerializer, CustomerRegistrationSerializer,
     CustomFieldDefinitionSerializer, DealSerializer, DocumentSerializer,
     InvitationAcceptSerializer, InvitationSerializer, LeaseSerializer,
@@ -44,6 +46,8 @@ from .serializers import (
     TeamMemberSerializer,
     PlatformAgencySerializer,
 )
+from .task_recurrence import create_next_task_occurrence
+from .validators import custom_field_in_use, pipeline_stage_in_use
 
 
 MANAGER_ROLES = {AgencyUser.ROLE_AGENCY_OWNER, AgencyUser.ROLE_AGENCY_MANAGER, AgencyUser.ROLE_SUPER_ADMIN}
@@ -51,6 +55,15 @@ MANAGER_ROLES = {AgencyUser.ROLE_AGENCY_OWNER, AgencyUser.ROLE_AGENCY_MANAGER, A
 
 class PublicSubmissionRateThrottle(AnonRateThrottle):
     scope = "public_submission"
+
+
+class PublicAppointmentRateThrottle(AnonRateThrottle):
+    scope = "public_appointment"
+
+    def allow_request(self, request, view):
+        if request.method != "POST":
+            return True
+        return super().allow_request(request, view)
 
 
 def client_ip(request):
@@ -311,7 +324,13 @@ class TaskViewSet(AgencyModelViewSet):
         instance = serializer.save(agency=self.request.user.agency, created_by=self.request.user, assigned_to=assigned)
         create_audit(self.request, instance, "created")
         if assigned != self.request.user:
-            Notification.objects.create(agency=instance.agency, user=assigned, title="New task", message=instance.title, category="task", link="/tasks")
+            Notification.objects.create(agency=instance.agency, user=assigned, title="New task", message=instance.title, category="task", link=f"/tasks?task={instance.id}")
+        create_next_task_occurrence(instance)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        create_audit(self.request, instance, "updated")
+        create_next_task_occurrence(instance)
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -423,21 +442,37 @@ class PlatformAgencyViewSet(
 class CustomFieldViewSet(AgencyModelViewSet):
     queryset = CustomFieldDefinition.objects.all()
     serializer_class = CustomFieldDefinitionSerializer
+    permission_classes = [IsAuthenticated, IsAgencyOwnerOrManagerOrReadOnly]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         module = self.request.query_params.get("module")
         return queryset.filter(module=module) if module else queryset
+
+    def perform_destroy(self, instance):
+        if custom_field_in_use(instance):
+            raise ValidationError({
+                "detail": "This field is in use. Deactivate it to preserve existing record values."
+            })
+        super().perform_destroy(instance)
 
 
 class PipelineStageViewSet(AgencyModelViewSet):
     queryset = PipelineStage.objects.all()
     serializer_class = PipelineStageSerializer
+    permission_classes = [IsAuthenticated, IsAgencyOwnerOrManagerOrReadOnly]
 
     def get_queryset(self):
         queryset = super().get_queryset()
         module = self.request.query_params.get("module")
         return queryset.filter(module=module) if module else queryset
+
+    def perform_destroy(self, instance):
+        if pipeline_stage_in_use(instance):
+            raise ValidationError({
+                "detail": "This stage is in use. Move its records to another stage before deleting it."
+            })
+        super().perform_destroy(instance)
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -634,7 +669,7 @@ def customer_from_request(request, agency):
 @throttle_classes([PublicSubmissionRateThrottle])
 @transaction.atomic
 def public_submission_create(request, slug):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     payload = request.data.copy()
     payload.pop("status", None)
     serializer = PublicSubmissionSerializer(data=payload, context={"request": request})
@@ -643,10 +678,12 @@ def public_submission_create(request, slug):
     property_obj = data.get("property")
     agent = data.get("agent") or getattr(property_obj, "assigned_agent", None)
 
-    if property_obj and property_obj.agency_id != agency.id:
-        raise ValidationError({"property": "Property does not belong to this agency."})
-    if agent and agent.agency_id != agency.id:
-        raise ValidationError({"agent": "Agent does not belong to this agency."})
+    if property_obj and not public_properties(agency=agency).filter(pk=property_obj.pk).exists():
+        raise ValidationError({"property": "Choose a currently public property from this agency."})
+    if agent and not AgencyUser.objects.filter(
+        pk=agent.pk, agency=agency, role=AgencyUser.ROLE_AGENT, is_active=True,
+    ).exists():
+        raise ValidationError({"agent": "Choose an active public agent from this agency."})
 
     metadata = data.get("metadata") or {}
     message = data.get("message", "")
@@ -723,7 +760,7 @@ def public_submission_create(request, slug):
 @permission_classes([AllowAny])
 @throttle_classes([PublicSubmissionRateThrottle])
 def public_agent_review_create(request, slug, agent_id):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     agent = get_object_or_404(
         AgencyUser,
         id=agent_id,
@@ -761,7 +798,7 @@ def public_agent_review_create(request, slug, agent_id):
 @permission_classes([AllowAny])
 @throttle_classes([PublicSubmissionRateThrottle])
 def customer_register(request, slug):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     serializer = CustomerRegistrationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     email = serializer.validated_data["email"].lower()
@@ -778,7 +815,7 @@ def customer_register(request, slug):
 @permission_classes([AllowAny])
 @throttle_classes([PublicSubmissionRateThrottle])
 def customer_login(request, slug):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     serializer = CustomerLoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     customer = CustomerProfile.objects.filter(agency=agency, email__iexact=serializer.validated_data["email"]).first()
@@ -792,11 +829,16 @@ def customer_login(request, slug):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def customer_saved_properties(request, slug):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     customer = customer_from_request(request, agency)
     if request.method == "GET":
-        return Response(SavedPropertySerializer(customer.saved_properties.select_related("property"), many=True).data)
-    property_obj = get_object_or_404(Property, id=request.data.get("property"), agency=agency, is_published=True)
+        saved = customer.saved_properties.filter(
+            property__in=public_properties(agency=agency)
+        ).select_related("property")
+        return Response(SavedPropertySerializer(saved, many=True).data)
+    property_obj = get_object_or_404(
+        public_properties(agency=agency), id=request.data.get("property")
+    )
     saved, created = SavedProperty.objects.get_or_create(customer=customer, property=property_obj)
     if not created:
         saved.delete(); return Response(status=status.HTTP_204_NO_CONTENT)
@@ -807,39 +849,73 @@ def customer_saved_properties(request, slug):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def customer_saved_searches(request, slug):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     customer = customer_from_request(request, agency)
     if request.method == "GET":
         return Response(SavedSearchSerializer(customer.saved_searches.all(), many=True).data)
-    serializer = SavedSearchSerializer(data=request.data)
+    serializer = SavedSearchSerializer(data=request.data, context={"customer": customer})
     serializer.is_valid(raise_exception=True)
     saved = serializer.save(agency=agency, customer=customer)
     return Response(SavedSearchSerializer(saved).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(request=SavedSearchSerializer, responses=SavedSearchSerializer)
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([AllowAny])
+def customer_saved_search_detail(request, slug, saved_search_id):
+    agency = get_public_agency(slug=slug)
+    customer = customer_from_request(request, agency)
+    saved = get_object_or_404(customer.saved_searches.all(), pk=saved_search_id)
+    if request.method == "GET":
+        return Response(SavedSearchSerializer(saved).data)
+    if request.method == "DELETE":
+        saved.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    serializer = SavedSearchSerializer(
+        saved,
+        data=request.data,
+        partial=True,
+        context={"customer": customer},
+    )
+    serializer.is_valid(raise_exception=True)
+    filters_changed = "filters" in serializer.validated_data and serializer.validated_data["filters"] != saved.filters
+    saved = serializer.save(last_notified_at=None if filters_changed else saved.last_notified_at)
+    return Response(SavedSearchSerializer(saved).data)
+
+
 @extend_schema(request=AppointmentSerializer, responses=AppointmentSerializer(many=True))
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
+@throttle_classes([PublicAppointmentRateThrottle])
+@transaction.atomic
 def public_appointments(request, slug):
-    agency = get_object_or_404(get_public_agencies_queryset(), slug=slug)
+    agency = get_public_agency(slug=slug)
     if request.method == "GET":
         slots = AppointmentAvailability.objects.filter(agency=agency, is_active=True).select_related("agent")
         return Response(AppointmentAvailabilitySerializer(slots, many=True).data)
     payload = request.data.copy()
-    serializer = AppointmentSerializer(data=payload)
+    requested_agent = AgencyUser.objects.filter(pk=payload.get("agent")).first()
+    if not requested_agent or not (
+        requested_agent.agency_id == agency.id
+        and requested_agent.role == AgencyUser.ROLE_AGENT
+        and requested_agent.is_active
+    ):
+        raise ValidationError({"agent": "Choose an active agent from this agency."})
+    requested_agent = AgencyUser.objects.select_for_update().get(pk=requested_agent.pk)
+    serializer = PublicAppointmentSerializer(data=payload, context={"request": request})
     serializer.is_valid(raise_exception=True)
     agent = serializer.validated_data.get("agent")
     property_obj = serializer.validated_data.get("property")
-    if agent and agent.agency_id != agency.id:
+    if not agent or agent.pk != requested_agent.pk:
         raise ValidationError({"agent": "Agent does not belong to this agency."})
-    if property_obj and property_obj.agency_id != agency.id:
-        raise ValidationError({"property": "Property does not belong to this agency."})
+    if property_obj and not public_properties(agency=agency).filter(pk=property_obj.pk).exists():
+        raise ValidationError({"property": "Choose a currently public property from this agency."})
     customer = None
     if request.headers.get("X-Customer-Token"):
         customer = customer_from_request(request, agency)
-    appointment = serializer.save(agency=agency, customer=customer)
+    appointment = serializer.save(agency=agency, customer=customer, status="requested")
     if appointment.agent:
-        Notification.objects.create(agency=agency, user=appointment.agent, title="Appointment requested", message=f"{appointment.full_name} requested {appointment.starts_at:%Y-%m-%d %H:%M}", category="appointment", link="/appointments")
+        Notification.objects.create(agency=agency, user=appointment.agent, title="Appointment requested", message=f"{appointment.full_name} requested {appointment.starts_at:%Y-%m-%d %H:%M}", category="appointment", link=f"/appointments?appointment={appointment.id}")
     return Response(AppointmentSerializer(appointment).data, status=status.HTTP_201_CREATED)
 
 

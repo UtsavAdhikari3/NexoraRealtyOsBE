@@ -3,7 +3,40 @@ from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
 
-from .models import CustomFieldDefinition
+from .models import (
+    Contact,
+    CustomFieldDefinition,
+    Deal,
+    Lease,
+    Owner,
+)
+
+
+def custom_field_in_use(definition):
+    from leads.models import Lead
+    from properties.models import Property
+
+    models_by_module = {
+        "lead": Lead,
+        "contact": Contact,
+        "property": Property,
+        "deal": Deal,
+        "owner": Owner,
+        "lease": Lease,
+    }
+    model = models_by_module[definition.module]
+    values = model.objects.filter(agency=definition.agency).exclude(
+        custom_data={}
+    ).values_list("custom_data", flat=True)
+    return any(definition.key in (data or {}) for data in values.iterator())
+
+
+def pipeline_stage_in_use(stage):
+    if stage.module == "lead":
+        from leads.models import Lead
+
+        return Lead.objects.filter(agency=stage.agency, status=stage.key).exists()
+    return Deal.objects.filter(agency=stage.agency, stage=stage.key).exists()
 
 
 def validate_custom_data(agency, module, data):

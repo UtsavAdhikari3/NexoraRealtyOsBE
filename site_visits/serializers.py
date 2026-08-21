@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils import timezone
 from leads.services import normalize_phone
 
 from .models import SiteVisit
@@ -214,3 +215,8 @@ class PublicSiteVisitRequestSerializer(serializers.Serializer):
         if len(normalized.lstrip("+")) < 7:
             raise serializers.ValidationError("Enter a valid phone number.")
         return normalized
+
+    def validate_preferred_datetime(self, value):
+        if value <= timezone.now():
+            raise serializers.ValidationError("Choose a future date and time.")
+        return value

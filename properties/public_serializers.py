@@ -1,3 +1,5 @@
+import json
+
 from rest_framework import serializers
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
@@ -10,6 +12,10 @@ from .area import conversion_payload, price_per_area
 
 
 class PublicPropertyMediaSerializer(serializers.ModelSerializer):
+    original = serializers.SerializerMethodField()
+    card = serializers.SerializerMethodField()
+    large = serializers.SerializerMethodField()
+
     class Meta:
         model = PropertyMedia
         fields = [
@@ -20,14 +26,149 @@ class PublicPropertyMediaSerializer(serializers.ModelSerializer):
             "thumbnail",
             "title",
             "caption",
+            "alt_text",
             "sort_order",
             "is_primary",
             "created_at",
+            "original",
+            "card",
+            "large",
         ]
+
+    def _payload(self, obj, field_name, width_name, height_name):
+        field = getattr(obj, field_name, None)
+        if not field:
+            return None
+        request = self.context.get("request")
+        url = field.url
+        if request and not url.startswith(("http://", "https://")):
+            url = request.build_absolute_uri(url)
+        return {
+            "url": url,
+            "width": getattr(obj, width_name, None),
+            "height": getattr(obj, height_name, None),
+        }
+
+    def get_original(self, obj):
+        payload = self._payload(obj, "file", "original_width", "original_height")
+        if payload:
+            return payload
+        if obj.external_url:
+            return {"url": obj.external_url, "width": None, "height": None}
+        return None
+
+    def get_card(self, obj):
+        return self._payload(obj, "card_image", "card_width", "card_height") or self.get_original(obj)
+
+    def get_large(self, obj):
+        return self._payload(obj, "large_image", "large_width", "large_height") or self.get_original(obj)
+
+
+class PublicPropertyCardSerializer(serializers.ModelSerializer):
+    display_property_id = serializers.SerializerMethodField()
+    location_display = serializers.SerializerMethodField()
+    area = serializers.SerializerMethodField()
+    primary_image = serializers.SerializerMethodField()
+    assigned_agent = serializers.SerializerMethodField()
+    freshness_state = serializers.SerializerMethodField()
+    verification = serializers.SerializerMethodField()
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+    tole = serializers.SerializerMethodField()
+    neighbourhood = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Property
+        fields = [
+            "id", "display_property_id", "share_slug", "title", "property_type",
+            "purpose", "status", "price", "currency", "rent_period", "province", "district",
+            "city", "municipality", "neighbourhood", "tole", "location_display",
+            "latitude", "longitude",
+            "bedrooms", "bathrooms", "area", "is_featured", "published_at",
+            "freshness_state", "verification", "primary_image", "assigned_agent",
+        ]
+
+    def get_display_property_id(self, obj):
+        return f"LP-{obj.id:03d}"
+
+    def get_location_display(self, obj):
+        parts = [obj.municipality or obj.city, obj.district, obj.province]
+        if obj.show_exact_location_publicly:
+            parts.insert(0, obj.tole or obj.neighbourhood)
+        seen = set()
+        output = []
+        for value in parts:
+            key = str(value or "").strip().casefold()
+            if key and key not in seen:
+                seen.add(key)
+                output.append(str(value).strip())
+        return ", ".join(output)
+
+    def get_latitude(self, obj):
+        return obj.latitude if obj.show_exact_location_publicly else None
+
+    def get_longitude(self, obj):
+        return obj.longitude if obj.show_exact_location_publicly else None
+
+    def get_tole(self, obj):
+        return obj.tole if obj.show_exact_location_publicly else ""
+
+    def get_neighbourhood(self, obj):
+        return obj.neighbourhood if obj.show_exact_location_publicly else ""
+
+    def get_area(self, obj):
+        if obj.land_area_value is not None and obj.land_area_unit:
+            return {"value": str(obj.land_area_value), "unit": obj.land_area_unit, "kind": "land"}
+        if obj.built_up_area_value is not None and obj.built_up_area_unit:
+            return {"value": str(obj.built_up_area_value), "unit": obj.built_up_area_unit, "kind": "built_up"}
+        return None
+
+    def get_primary_image(self, obj):
+        media_items = getattr(obj, "_ordered_public_media", None)
+        if media_items is None:
+            media_items = list(obj.media.all())
+        image = next((item for item in media_items if item.media_type == "image"), None)
+        if not image:
+            return None
+        request = self.context.get("request")
+        source = image.card_image or image.thumbnail or image.file
+        url = source.url if source else image.external_url
+        if url and request and not url.startswith(("http://", "https://")):
+            url = request.build_absolute_uri(url)
+        return {
+            "id": image.id,
+            "url": url,
+            "width": image.card_width or image.original_width,
+            "height": image.card_height or image.original_height,
+            "alt_text": image.alt_text or image.title or obj.title,
+        }
+
+    def get_assigned_agent(self, obj):
+        if not obj.assigned_agent:
+            return None
+        return {"id": obj.assigned_agent_id, "name": obj.assigned_agent.full_name}
+
+    def get_freshness_state(self, obj):
+        if not obj.listing_expires_at:
+            return "unconfirmed"
+        if obj.listing_expires_at <= timezone.now() + timedelta(days=7):
+            return "expiring_soon"
+        return "fresh"
+
+    def get_verification(self, obj):
+        try:
+            verification = obj.verification
+        except ObjectDoesNotExist:
+            return {"level": "unverified", "label": "Not verified"}
+        return {
+            "level": verification.verification_level,
+            "label": verification.verification_level_display,
+        }
 
 
 class PublicPropertySerializer(serializers.ModelSerializer):
     media = PublicPropertyMediaSerializer(
+        source="_ordered_public_media",
         many=True,
         read_only=True
     )
@@ -49,6 +190,14 @@ class PublicPropertySerializer(serializers.ModelSerializer):
     verification_summary = serializers.SerializerMethodField()
     availability_status_display = serializers.CharField(source="get_status_display", read_only=True)
     freshness_state = serializers.SerializerMethodField()
+    address = serializers.SerializerMethodField()
+    landmark = serializers.SerializerMethodField()
+    tole = serializers.SerializerMethodField()
+    neighbourhood = serializers.SerializerMethodField()
+    ward_number = serializers.SerializerMethodField()
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+    canonical_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
@@ -61,6 +210,7 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "purpose",
             "price",
             "currency",
+            "rent_period",
             "price_per_sqft",
             "price_per_aana", "price_per_dhur", "price_per_kattha", "price_per_land_sqft",
 
@@ -106,6 +256,7 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             "seo_title",
             "seo_description",
             "share_slug",
+            "canonical_url",
 
             "is_featured",
             "status", "availability_status_display", "availability_verified_at",
@@ -126,6 +277,10 @@ class PublicPropertySerializer(serializers.ModelSerializer):
             return obj.agency.name
 
         return None
+
+    def get_canonical_url(self, obj):
+        from agencies.website_urls import property_website_url
+        return property_website_url(obj)
 
     def get_assigned_agent_name(self, obj) -> str | None:
         if obj.assigned_agent:
@@ -151,21 +306,17 @@ class PublicPropertySerializer(serializers.ModelSerializer):
         return {
             "id": obj.assigned_agent.id,
             "full_name": obj.assigned_agent.full_name,
-            "email": obj.assigned_agent.email,
-            "phone": obj.assigned_agent.phone,
+            "email": obj.assigned_agent.email if obj.assigned_agent.show_email_publicly else None,
+            "phone": obj.assigned_agent.phone if obj.assigned_agent.show_phone_publicly else None,
             "designation": obj.assigned_agent.designation,
             "bio": obj.assigned_agent.bio,
             "profile_image": profile_image_url,
         }
 
     def get_location_display(self, obj) -> str:
-        parts = [
-            obj.tole or obj.neighbourhood,
-            f"Ward {obj.ward_number}" if obj.ward_number else "",
-            obj.municipality or obj.city,
-            obj.district,
-            obj.province,
-        ]
+        parts = [obj.municipality or obj.city, obj.district, obj.province]
+        if obj.show_exact_location_publicly:
+            parts = [obj.tole or obj.neighbourhood, f"Ward {obj.ward_number}" if obj.ward_number else "", *parts]
 
         unique_parts = []
         seen = set()
@@ -174,6 +325,27 @@ class PublicPropertySerializer(serializers.ModelSerializer):
                 unique_parts.append(str(part))
                 seen.add(str(part).casefold())
         return ", ".join(unique_parts)
+
+    def get_address(self, obj):
+        return obj.address if obj.show_exact_location_publicly else ""
+
+    def get_landmark(self, obj):
+        return obj.landmark if obj.show_exact_location_publicly else ""
+
+    def get_tole(self, obj):
+        return obj.tole if obj.show_exact_location_publicly else ""
+
+    def get_neighbourhood(self, obj):
+        return obj.neighbourhood if obj.show_exact_location_publicly else ""
+
+    def get_ward_number(self, obj):
+        return obj.ward_number if obj.show_exact_location_publicly else ""
+
+    def get_latitude(self, obj):
+        return obj.latitude if obj.show_exact_location_publicly else None
+
+    def get_longitude(self, obj):
+        return obj.longitude if obj.show_exact_location_publicly else None
 
     def get_display_property_id(self, obj) -> str:
         return f"LP-{obj.id:03d}"
@@ -269,3 +441,10 @@ class PublicPropertyEventSerializer(serializers.Serializer):
     utm_medium = serializers.CharField(max_length=100, required=False, allow_blank=True)
     utm_campaign = serializers.CharField(max_length=150, required=False, allow_blank=True)
     metadata = serializers.JSONField(required=False)
+
+    def validate_metadata(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Metadata must be an object.")
+        if len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) > 2048:
+            raise serializers.ValidationError("Metadata must be 2 KB or smaller.")
+        return value

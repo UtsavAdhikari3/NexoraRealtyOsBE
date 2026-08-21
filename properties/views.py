@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count, Q
 from django.core.files.base import ContentFile
 from django.http import FileResponse, HttpResponse
@@ -33,7 +34,7 @@ from .serializers import (
     PropertyDistributionLinkSerializer,
     PropertyDistributionSocialDraftRequestSerializer,
 )
-from .verification import get_or_create_verification
+from .verification import get_or_create_verification, reconcile_verification
 from .freshness import (
     confirm_listing_freshness, detect_duplicate_listings, record_property_history,
 )
@@ -478,8 +479,29 @@ class PropertyVerificationDetailView(generics.RetrieveUpdateAPIView):
             raise PermissionDenied("You do not have permission to update property verification.")
         return super().partial_update(request, *args, **kwargs)
 
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        before = {
+            field: getattr(instance, field)
+            for field, _ in PropertyVerification.MILESTONES
+        }
+        verification = serializer.save()
+        changes = {
+            field: {"from": before[field], "to": getattr(verification, field)}
+            for field in before
+            if before[field] != getattr(verification, field)
+        }
+        if changes:
+            record_property_history(
+                verification.property,
+                "verification_changed",
+                "Property verification milestones updated",
+                actor=self.request.user,
+                changes=changes,
+            )
 
-class PropertyVerificationDocumentDetailView(generics.RetrieveUpdateAPIView):
+
+class PropertyVerificationDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = PropertyVerificationDocumentSerializer
     permission_classes = [IsAuthenticated]
     lookup_field = "document_type"
@@ -510,6 +532,67 @@ class PropertyVerificationDocumentDetailView(generics.RetrieveUpdateAPIView):
             raise PermissionDenied("You do not have permission to update verification documents.")
         return super().partial_update(request, *args, **kwargs)
 
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        before = {
+            "status": instance.status,
+            "file": instance.file.name if instance.file else "",
+            "external_url": instance.external_url,
+        }
+        document = serializer.save()
+        after = {
+            "status": document.status,
+            "file": document.file.name if document.file else "",
+            "external_url": document.external_url,
+        }
+        changes = {
+            key: {"from": before[key], "to": after[key]}
+            for key in before if before[key] != after[key]
+        }
+        if changes:
+            record_property_history(
+                document.verification.property,
+                "document_changed",
+                f"{document.get_document_type_display()} updated",
+                actor=self.request.user,
+                changes=changes,
+            )
+        reconcile_verification(
+            document.verification,
+            actor=self.request.user,
+            reason=f"{document.get_document_type_display()} was updated",
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        property_obj = self.get_property()
+        if not can_manage_property(request.user, property_obj):
+            raise PermissionDenied("You do not have permission to delete verification documents.")
+        document = self.get_object()
+        if document.file:
+            document.file.delete(save=False)
+        document.file = None
+        document.external_url = ""
+        document.document_number = ""
+        document.issued_date = None
+        document.expiry_date = None
+        document.notes = ""
+        document.status = "missing"
+        document.reviewed_by = None
+        document.reviewed_at = None
+        document.save()
+        record_property_history(
+            property_obj,
+            "document_changed",
+            f"{document.get_document_type_display()} removed from verification checklist",
+            actor=request.user,
+        )
+        reconcile_verification(
+            document.verification,
+            actor=request.user,
+            reason=f"{document.get_document_type_display()} was removed",
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class PropertyFreshnessConfirmView(APIView):
     permission_classes = [IsAuthenticated]
@@ -534,8 +617,12 @@ class PropertyFreshnessConfirmView(APIView):
 class PropertyRepublishRequestView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, property_id):
-        property_obj = get_object_or_404(Property, id=property_id, agency=request.user.agency)
+        property_obj = get_object_or_404(
+            Property.objects.select_for_update(),
+            id=property_id, agency=request.user.agency,
+        )
         if not can_manage_property(request.user, property_obj):
             raise PermissionDenied("You do not have permission to request republication.")
         if not property_obj.requires_republish_approval:
@@ -556,10 +643,14 @@ class PropertyRepublishRequestView(APIView):
 class PropertyRepublishDecisionView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def post(self, request, property_id):
         if not is_agency_owner_or_manager(request.user):
             raise PermissionDenied("Only agency owners or managers can approve republication.")
-        property_obj = get_object_or_404(Property, id=property_id, agency=request.user.agency)
+        property_obj = get_object_or_404(
+            Property.objects.select_for_update(),
+            id=property_id, agency=request.user.agency,
+        )
         if property_obj.republish_approval_status != "pending":
             raise ValidationError({"detail": "No republish request is pending."})
         decision = request.data.get("decision")

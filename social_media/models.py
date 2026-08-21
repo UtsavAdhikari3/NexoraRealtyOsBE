@@ -89,7 +89,38 @@ class SocialPost(models.Model):
 
     def __str__(self):
         return f"{self.platform} - {self.status} - {self.agency.name}"
-    
+
+
+class SocialPostMedia(models.Model):
+    """An ordered image belonging to a social post.
+
+    ``SocialPost.image`` remains as a backwards-compatible cover-image alias.
+    New multi-image behavior uses this collection as the source of truth.
+    """
+
+    MAX_IMAGES_PER_POST = 5
+
+    post = models.ForeignKey(
+        SocialPost,
+        on_delete=models.CASCADE,
+        related_name="media_items",
+    )
+    image = models.ImageField(upload_to="social_posts/")
+    position = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["position", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(position__lt=5),
+                name="social_post_media_position_below_limit",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Post {self.post_id} image {self.position + 1}"
+
 import secrets
 
 from django.conf import settings

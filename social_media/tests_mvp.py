@@ -72,6 +72,23 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             save=True,
         )
 
+    def test_social_account_disconnect_accepts_delete_and_is_tenant_scoped(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.delete(reverse("social-account-disconnect", kwargs={"pk": self.account.id}))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.status, SocialAccount.STATUS_DISCONNECTED)
+
+        other = SocialAccount.objects.create(
+            agency=self.other_agency,
+            provider=SocialAccount.PROVIDER_META,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            external_id="other-disconnect",
+            access_token="other-token",
+        )
+        hidden = self.client.delete(reverse("social-account-disconnect", kwargs={"pk": other.id}))
+        self.assertEqual(hidden.status_code, status.HTTP_404_NOT_FOUND)
+
     @patch(
         "social_media.services.publishing.publish_facebook_feed_post",
         return_value={"id": "page-123_456"},

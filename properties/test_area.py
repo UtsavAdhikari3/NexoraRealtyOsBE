@@ -56,7 +56,7 @@ class NepalPropertyPublicAPITests(APITestCase):
             {"land_area_min": "15", "land_area_unit": "aana"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([item["id"] for item in response.data], [self.ropani.id])
+        self.assertEqual([item["id"] for item in response.data["results"]], [self.ropani.id])
 
     def test_public_payload_exposes_nepal_fields_and_rates(self):
         response = self.client.get(

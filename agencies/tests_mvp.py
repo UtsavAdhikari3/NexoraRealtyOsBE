@@ -3,7 +3,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from agencies.models import Agency
+from agencies.models import Agency, AgencyDomain
 from leads.models import Lead
 from users.models import AgencyUser
 
@@ -54,8 +54,13 @@ class AgencyMVPAPITestCase(APITestCase):
         self.assertEqual(self.agency.website_config["hero_title"], "Find a remarkable home")
 
     def test_public_agency_can_resolve_custom_domain(self):
-        self.agency.custom_domain = "homes.example.com"
-        self.agency.save(update_fields=["custom_domain"])
+        AgencyDomain.objects.create(
+            agency=self.agency,
+            domain="homes.example.com",
+            status=AgencyDomain.STATUS_VERIFIED,
+            is_active=True,
+            is_primary=True,
+        )
         response = self.client.get("/api/public/agencies/by-domain/?domain=https://homes.example.com/path")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["slug"], self.agency.slug)

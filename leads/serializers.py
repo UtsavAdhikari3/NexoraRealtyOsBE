@@ -198,6 +198,11 @@ class LeadSerializer(serializers.ModelSerializer):
                 "Assigned user must have role='agent'."
             )
 
+        if not value.is_active:
+            raise serializers.ValidationError(
+                "Inactive agents cannot receive leads."
+            )
+
         return value
 
     def validate(self, attrs):

@@ -62,6 +62,24 @@ class SiteVisitMVPAPITestCase(APITestCase):
             scheduled_at=timezone.now() + timedelta(hours=2),
             status="scheduled",
         )
+        self.other_agency = Agency.objects.create(
+            name="Other Visit Realty",
+            license_number="VISIT-002",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.other_agent = AgencyUser.objects.create_user(
+            email="other-visit-agent@example.com",
+            password="Password123",
+            full_name="Other Visit Agent",
+            agency=self.other_agency,
+            role=AgencyUser.ROLE_AGENT,
+        )
+        self.other_lead = Lead.objects.create(
+            agency=self.other_agency,
+            assigned_agent=self.other_agent,
+            full_name="Other Visit Buyer",
+            phone="9800000099",
+        )
 
     def test_completion_updates_lead_and_status_history(self):
         self.client.force_authenticate(user=self.owner)
@@ -92,3 +110,43 @@ class SiteVisitMVPAPITestCase(APITestCase):
         self.visit.refresh_from_db()
         self.assertIsNotNone(self.visit.reminder_sent_at)
         self.assertEqual(len(mail.outbox), 1)
+
+    def test_site_visit_detail_is_tenant_scoped(self):
+        other_property = Property.objects.create(
+            agency=self.other_agency,
+            title="Other Visit Property",
+            property_type="house",
+            purpose="sale",
+            price="9000000",
+            province="Bagmati",
+            district="Bhaktapur",
+            city="Bhaktapur",
+        )
+        other_visit = SiteVisit.objects.create(
+            agency=self.other_agency,
+            lead=self.other_lead,
+            property=other_property,
+            assigned_agent=self.other_agent,
+            scheduled_at=timezone.now() + timedelta(days=1),
+            status="scheduled",
+        )
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get(
+            reverse("site-visit-detail", kwargs={"pk": other_visit.id})
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_site_visit_rejects_cross_agency_lead(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            reverse("site-visit-list"),
+            {
+                "lead": self.other_lead.id,
+                "property": self.property.id,
+                "assigned_agent": self.agent.id,
+                "scheduled_at": (timezone.now() + timedelta(days=1)).isoformat(),
+                "status": "scheduled",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

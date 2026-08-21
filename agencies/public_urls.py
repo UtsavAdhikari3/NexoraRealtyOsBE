@@ -5,12 +5,21 @@ from .public_views import (
     PublicAgencyDetailView,
     PublicAgencySlugDetailView,
     PublicAgencyDomainDetailView,
+    PublicAgencyPreviewView,
     PublicAgentListView,
     PublicAgentDetailView,
 )
+from .seo_views import PublicRobotsView, PublicSitemapView
 
 
 urlpatterns = [
+    path("agencies/<str:license_number>/sitemap.xml", PublicSitemapView.as_view(), name="public-agency-sitemap"),
+    path("agencies/<str:license_number>/robots.txt", PublicRobotsView.as_view(), name="public-agency-robots"),
+    path(
+        "agencies/website-preview/",
+        PublicAgencyPreviewView.as_view(),
+        name="public-agency-website-preview",
+    ),
     path(
         "agencies/by-slug/<slug:slug>/",
         PublicAgencySlugDetailView.as_view(),

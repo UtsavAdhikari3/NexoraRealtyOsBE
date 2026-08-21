@@ -100,10 +100,23 @@ class Deal(AgencyScopedModel):
         indexes = [models.Index(fields=["agency", "stage", "expected_close_date"])]
 
     def save(self, *args, **kwargs):
-        if self.stage == "closed_won" and not self.closed_at:
+        custom_stage = None
+        if self.agency_id and self.stage not in {key for key, _ in self.STAGES}:
+            custom_stage = PipelineStage.objects.filter(
+                agency_id=self.agency_id,
+                module="deal",
+                key=self.stage,
+            ).only("is_closed").first()
+        is_closed = self.stage in {"closed_won", "closed_lost"} or bool(
+            custom_stage and custom_stage.is_closed
+        )
+        if is_closed and not self.closed_at:
             self.closed_at = timezone.now()
-        elif self.stage not in {"closed_won", "closed_lost"}:
+        elif not is_closed:
             self.closed_at = None
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | {"closed_at"}
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -174,6 +187,7 @@ class Lease(AgencyScopedModel):
 class Task(AgencyScopedModel):
     STATUS_CHOICES = [("todo", "To Do"), ("in_progress", "In Progress"), ("done", "Done"), ("cancelled", "Cancelled")]
     PRIORITIES = [("low", "Low"), ("medium", "Medium"), ("high", "High"), ("urgent", "Urgent")]
+    RECURRENCE_CHOICES = [("", "Does not repeat"), ("daily", "Daily"), ("weekly", "Weekly"), ("monthly", "Monthly")]
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="todo")
@@ -185,7 +199,14 @@ class Task(AgencyScopedModel):
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, null=True, blank=True, related_name="tasks")
     deal = models.ForeignKey(Deal, on_delete=models.CASCADE, null=True, blank=True, related_name="tasks")
     property = models.ForeignKey(Property, on_delete=models.CASCADE, null=True, blank=True, related_name="tasks")
-    recurrence = models.CharField(max_length=30, blank=True)
+    recurrence = models.CharField(max_length=30, choices=RECURRENCE_CHOICES, blank=True)
+    generated_from = models.OneToOneField(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="next_occurrence",
+    )
 
     class Meta:
         ordering = ["status", "due_at"]
@@ -263,7 +284,38 @@ class PipelineStage(AgencyScopedModel):
 
     class Meta:
         ordering = ["module", "sort_order"]
-        constraints = [models.UniqueConstraint(fields=["agency", "module", "key"], name="unique_agency_pipeline_stage")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["agency", "module", "key"],
+                name="unique_agency_pipeline_stage",
+            ),
+            models.UniqueConstraint(
+                fields=["agency", "module", "sort_order"],
+                name="unique_agency_pipeline_stage_order",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(is_won=False) | models.Q(is_closed=True),
+                name="won_pipeline_stage_must_be_closed",
+            ),
+        ]
+
+
+class ScheduledJob(models.Model):
+    """Database-backed lease and health record for an internal scheduler job."""
+
+    name = models.SlugField(max_length=80, unique=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_started_at = models.DateTimeField(null=True, blank=True)
+    last_succeeded_at = models.DateTimeField(null=True, blank=True)
+    last_failed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True)
+    last_result = models.JSONField(default=dict, blank=True)
+    run_count = models.PositiveIntegerField(default=0)
+    failure_count = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
 
 
 class AuditLog(models.Model):
@@ -317,6 +369,9 @@ class SavedSearch(AgencyScopedModel):
     filters = models.JSONField(default=dict)
     alerts_enabled = models.BooleanField(default=True)
     last_notified_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    last_match_count = models.PositiveIntegerField(default=0)
+    last_check_error = models.TextField(blank=True)
 
 
 class PublicSubmission(AgencyScopedModel):

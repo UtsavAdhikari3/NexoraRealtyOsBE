@@ -27,6 +27,18 @@ class Property(models.Model):
         ("lease", "Lease"),
     ]
 
+    CURRENCY_CHOICES = [
+        ("NPR", "Nepalese Rupee"),
+        ("USD", "US Dollar"),
+        ("INR", "Indian Rupee"),
+    ]
+
+    RENT_PERIOD_CHOICES = [
+        ("week", "Per week"),
+        ("month", "Per month"),
+        ("year", "Per year"),
+    ]
+
     STATUS_CHOICES = [
         ("draft", "Draft"),
         ("available", "Available"),
@@ -90,7 +102,15 @@ class Property(models.Model):
 
     currency = models.CharField(
         max_length=10,
+        choices=CURRENCY_CHOICES,
         default="NPR"
+    )
+
+    rent_period = models.CharField(
+        max_length=10,
+        choices=RENT_PERIOD_CHOICES,
+        null=True,
+        blank=True,
     )
 
     # Step 2: Location
@@ -222,6 +242,7 @@ class Property(models.Model):
     virtual_tour_url = models.URLField(
         blank=True
     )
+    show_exact_location_publicly = models.BooleanField(default=True)
     video_tour_url = models.URLField(blank=True)
 
     # Step 5: Description
@@ -344,6 +365,9 @@ class Property(models.Model):
             models.Index(fields=["agency", "is_published", "status"]),
             models.Index(fields=["agency", "property_type", "purpose"]),
             models.Index(fields=["agency", "assigned_agent", "status"]),
+            models.Index(fields=["agency", "is_published", "status", "listing_expires_at"], name="property_public_expiry_idx"),
+            models.Index(fields=["agency", "purpose", "price"], name="property_purpose_price_idx"),
+            models.Index(fields=["agency", "is_featured", "published_at"], name="property_featured_pub_idx"),
             models.Index(fields=["city", "district"]),
             models.Index(fields=["district", "municipality", "ward_number"]),
             models.Index(fields=["land_use_classification", "property_type"]),
@@ -446,9 +470,27 @@ class PropertyMedia(models.Model):
         null=True,
         blank=True
     )
+    card_image = models.ImageField(
+        upload_to="property_media/renditions/card/",
+        null=True,
+        blank=True,
+    )
+    large_image = models.ImageField(
+        upload_to="property_media/renditions/large/",
+        null=True,
+        blank=True,
+    )
+    original_width = models.PositiveIntegerField(null=True, blank=True)
+    original_height = models.PositiveIntegerField(null=True, blank=True)
+    card_width = models.PositiveIntegerField(null=True, blank=True)
+    card_height = models.PositiveIntegerField(null=True, blank=True)
+    large_width = models.PositiveIntegerField(null=True, blank=True)
+    large_height = models.PositiveIntegerField(null=True, blank=True)
 
     title = models.CharField(max_length=255, blank=True)
     caption = models.TextField(blank=True)
+    alt_text = models.CharField(max_length=255, blank=True)
+    is_public = models.BooleanField(default=True)
 
     sort_order = models.PositiveIntegerField(default=0)
     is_primary = models.BooleanField(default=False)
@@ -465,6 +507,19 @@ class PropertyMedia(models.Model):
 
     def __str__(self):
         return f"{self.property.title} - {self.media_type}"
+
+    class Meta:
+        ordering = ["-is_primary", "sort_order", "created_at"]
+        indexes = [
+            models.Index(fields=["property", "-is_primary", "sort_order"], name="property_media_order_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["property"],
+                condition=models.Q(is_primary=True),
+                name="one_primary_media_per_property",
+            ),
+        ]
 
 
 class PropertyVerification(models.Model):
@@ -571,6 +626,8 @@ class PropertyHistory(models.Model):
         ("republish_approved", "Republish Approved"), ("republish_rejected", "Republish Rejected"),
         ("withdrawn", "Withdrawn"), ("duplicate_flagged", "Duplicate Flagged"),
         ("report_received", "Public Report Received"),
+        ("verification_changed", "Verification Changed"),
+        ("document_changed", "Verification Document Changed"),
     ]
     agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="property_history")
     property = models.ForeignKey(Property, on_delete=models.CASCADE, related_name="history")

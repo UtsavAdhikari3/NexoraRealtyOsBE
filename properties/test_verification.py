@@ -53,7 +53,11 @@ class PropertyVerificationAPITests(APITestCase):
         response = self.client.patch(self.verification_url, {"fully_verified": True}, format="json")
         self.assertEqual(response.status_code, 400)
 
-        self.client.patch(self.document_url("lalpurja"), {"status": "received"}, format="json")
+        self.client.patch(
+            self.document_url("lalpurja"),
+            {"status": "received", "external_url": "https://documents.example/lalpurja.pdf"},
+            format="json",
+        )
         response = self.client.patch(self.verification_url, {
             "owner_identity_verified": True,
             "ownership_document_received": True,
@@ -62,7 +66,14 @@ class PropertyVerificationAPITests(APITestCase):
         self.assertEqual(response.data["verification_level"], "ownership_document_received")
 
         for document_type, _ in PropertyVerificationDocument.DOCUMENT_TYPES:
-            self.client.patch(self.document_url(document_type), {"status": "approved"}, format="json")
+            self.client.patch(
+                self.document_url(document_type),
+                {
+                    "status": "approved",
+                    "external_url": f"https://documents.example/{document_type}.pdf",
+                },
+                format="json",
+            )
         response = self.client.patch(self.verification_url, {
             "owner_identity_verified": True,
             "ownership_document_received": True,
@@ -73,6 +84,35 @@ class PropertyVerificationAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["fully_verified"])
         self.assertEqual(response.data["approved_document_count"], 10)
+
+    def test_removing_lalpurja_rolls_back_dependent_verification_milestones(self):
+        self.client.get(self.verification_url)
+        for document_type, _ in PropertyVerificationDocument.DOCUMENT_TYPES:
+            self.client.patch(
+                self.document_url(document_type),
+                {
+                    "status": "approved",
+                    "external_url": f"https://documents.example/{document_type}.pdf",
+                },
+                format="json",
+            )
+        completed = self.client.patch(self.verification_url, {
+            "owner_identity_verified": True,
+            "ownership_document_received": True,
+            "physically_inspected": True,
+            "documents_reviewed": True,
+            "fully_verified": True,
+        }, format="json")
+        self.assertEqual(completed.status_code, 200)
+
+        removed = self.client.delete(self.document_url("lalpurja"))
+        self.assertEqual(removed.status_code, 204)
+        refreshed = self.client.get(self.verification_url)
+        self.assertTrue(refreshed.data["owner_identity_verified"])
+        self.assertFalse(refreshed.data["ownership_document_received"])
+        self.assertFalse(refreshed.data["physically_inspected"])
+        self.assertFalse(refreshed.data["documents_reviewed"])
+        self.assertFalse(refreshed.data["fully_verified"])
 
     def test_public_payload_exposes_summary_but_never_private_documents(self):
         self.client.get(self.verification_url)

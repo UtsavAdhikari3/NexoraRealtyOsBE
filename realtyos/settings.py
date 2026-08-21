@@ -53,6 +53,10 @@ ALLOWED_MEDIA_CONTENT_TYPES = env_list(
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env_bool("DEBUG", True)
+REQUIRE_AGENT_OTP_VERIFICATION = env_bool(
+    "REQUIRE_AGENT_OTP_VERIFICATION",
+    not DEBUG,
+)
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
@@ -248,7 +252,17 @@ INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS = float(
     os.getenv("INSTAGRAM_CONTAINER_POLL_INTERVAL_SECONDS", "2")
 )
 PUBLIC_FRONTEND_URL = os.getenv("PUBLIC_FRONTEND_URL", "http://localhost:5173")
-STOREFRONT_PUBLIC_URL = os.getenv("STOREFRONT_PUBLIC_URL", "http://localhost:3000")
+STOREFRONT_PUBLIC_URL = os.getenv(
+    "STOREFRONT_PUBLIC_URL", "http://localhost:5173/?tenant={slug}"
+)
+PLATFORM_DOMAIN_SUFFIX = os.getenv("PLATFORM_DOMAIN_SUFFIX", "nexorarealtyos.com")
+CUSTOM_DOMAIN_CNAME_TARGET = os.getenv("CUSTOM_DOMAIN_CNAME_TARGET", "sites.nexorarealtyos.com")
+DNS_OVER_HTTPS_URL = os.getenv("DNS_OVER_HTTPS_URL", "https://cloudflare-dns.com/dns-query")
+PDF_LATIN_FONT = os.getenv("PDF_LATIN_FONT", "")
+PDF_LATIN_BOLD_FONT = os.getenv("PDF_LATIN_BOLD_FONT", "")
+PDF_DEVANAGARI_FONT = os.getenv("PDF_DEVANAGARI_FONT", "")
+PDF_DEVANAGARI_BOLD_FONT = os.getenv("PDF_DEVANAGARI_BOLD_FONT", "")
+STOREFRONT_PREVIEW_URL = os.getenv("STOREFRONT_PREVIEW_URL", "http://localhost:3000")
 INSTAGRAM_PUBLISH_DEADLINE_SECONDS = float(
     os.getenv("INSTAGRAM_PUBLISH_DEADLINE_SECONDS", "75")
 )
@@ -298,6 +312,7 @@ REST_FRAMEWORK = {
             "10/hour",
         ),
         "public_submission": os.getenv("THROTTLE_PUBLIC_SUBMISSION", "10/hour"),
+        "public_appointment": os.getenv("THROTTLE_PUBLIC_APPOINTMENT", "20/hour"),
         "public_event": os.getenv("THROTTLE_PUBLIC_EVENT", "120/hour"),
         "oauth": os.getenv("THROTTLE_OAUTH", "20/hour"),
         "social_publish": os.getenv("THROTTLE_SOCIAL_PUBLISH", "30/hour"),

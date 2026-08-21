@@ -1,8 +1,10 @@
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
 
 from rest_framework import serializers
+from PIL import Image, UnidentifiedImageError
 
 from .models import (
     Property, PropertyMedia, PropertyVerification, PropertyVerificationDocument,
@@ -10,6 +12,7 @@ from .models import (
     PropertyDistributionLink,
 )
 from .area import conversion_payload, price_per_area
+from .media_renditions import delete_unreferenced_files, generate_property_media_renditions, media_files
 
 
 class PropertyDistributionSocialDraftRequestSerializer(serializers.Serializer):
@@ -45,8 +48,18 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
             "file",
             "external_url",
             "thumbnail",
+            "card_image",
+            "large_image",
+            "original_width",
+            "original_height",
+            "card_width",
+            "card_height",
+            "large_width",
+            "large_height",
             "title",
             "caption",
+            "alt_text",
+            "is_public",
             "sort_order",
             "is_primary",
             "uploaded_by",
@@ -57,6 +70,14 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
             "id",
             "property",
             "uploaded_by",
+            "card_image",
+            "large_image",
+            "original_width",
+            "original_height",
+            "card_width",
+            "card_height",
+            "large_width",
+            "large_height",
             "created_at",
         ]
 
@@ -96,24 +117,58 @@ class PropertyMediaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Provide either an uploaded file or an external URL."
             )
+        media_type = attrs.get("media_type", getattr(self.instance, "media_type", "image"))
+        if file_value and media_type == "image":
+            try:
+                file_value.seek(0)
+                with Image.open(file_value) as image:
+                    image.verify()
+                file_value.seek(0)
+                with Image.open(file_value) as image:
+                    width, height = image.size
+                    if image.format not in {"JPEG", "PNG", "WEBP"}:
+                        raise serializers.ValidationError({"file": "Use a JPEG, PNG, or WebP image."})
+                    if width > 12000 or height > 12000 or width * height > 50_000_000:
+                        raise serializers.ValidationError({"file": "Image dimensions are too large."})
+                    expected_content_types = {
+                        "JPEG": {"image/jpeg", "image/pjpeg"},
+                        "PNG": {"image/png"},
+                        "WEBP": {"image/webp"},
+                    }
+                    content_type = getattr(file_value, "content_type", "")
+                    if content_type and content_type not in expected_content_types[image.format]:
+                        raise serializers.ValidationError({"file": "The file content does not match its MIME type."})
+            except (UnidentifiedImageError, OSError, ValueError):
+                raise serializers.ValidationError({"file": "Upload a valid, non-corrupt image."})
+            finally:
+                file_value.seek(0)
         return attrs
 
     def create(self, validated_data):
-        instance = super().create(validated_data)
-        if instance.is_primary:
-            PropertyMedia.objects.filter(
-                property=instance.property,
-                is_primary=True,
-            ).exclude(id=instance.id).update(is_primary=False)
+        with transaction.atomic():
+            if validated_data.get("is_primary"):
+                PropertyMedia.objects.filter(
+                    property=validated_data["property"],
+                    is_primary=True,
+                ).update(is_primary=False)
+            instance = super().create(validated_data)
+            if instance.media_type == "image" and instance.file:
+                generate_property_media_renditions(instance)
         return instance
 
     def update(self, instance, validated_data):
-        instance = super().update(instance, validated_data)
-        if instance.is_primary:
-            PropertyMedia.objects.filter(
-                property=instance.property,
-                is_primary=True,
-            ).exclude(id=instance.id).update(is_primary=False)
+        old_files = media_files(instance)
+        should_regenerate = "file" in validated_data or "media_type" in validated_data
+        with transaction.atomic():
+            if validated_data.get("is_primary", instance.is_primary):
+                PropertyMedia.objects.filter(
+                    property=instance.property,
+                    is_primary=True,
+                ).exclude(id=instance.id).update(is_primary=False)
+            instance = super().update(instance, validated_data)
+            if should_regenerate:
+                generate_property_media_renditions(instance)
+        delete_unreferenced_files(old_files, exclude_pk=instance.pk)
         return instance
 
 
@@ -153,6 +208,17 @@ class PropertyVerificationDocumentSerializer(serializers.ModelSerializer):
         expiry = attrs.get("expiry_date", getattr(self.instance, "expiry_date", None))
         if issued and expiry and expiry < issued:
             raise serializers.ValidationError({"expiry_date": "Expiry date cannot be before issued date."})
+        status_value = attrs.get("status", getattr(self.instance, "status", "missing"))
+        file_value = attrs.get("file", getattr(self.instance, "file", None))
+        external_url = attrs.get(
+            "external_url", getattr(self.instance, "external_url", "")
+        )
+        if status_value in {"received", "under_review", "approved", "rejected"} and not (
+            file_value or external_url
+        ):
+            raise serializers.ValidationError({
+                "status": "Upload a document or provide its URL before changing this status."
+            })
         return attrs
 
     def update(self, instance, validated_data):
@@ -429,6 +495,13 @@ class PropertySerializer(serializers.ModelSerializer):
         if ward and (not ward.isdigit() or int(ward) < 1 or int(ward) > 99):
             raise serializers.ValidationError({"ward_number": "Enter a ward number from 1 to 99."})
 
+        purpose = current("purpose")
+        rent_period = current("rent_period")
+        if purpose in {"rent", "lease"} and not rent_period:
+            raise serializers.ValidationError({"rent_period": "Select whether this price is weekly, monthly, or yearly."})
+        if purpose == "sale":
+            attrs["rent_period"] = None
+
         status_value = attrs.get(
             "status",
             self.instance.status if self.instance else "draft",
@@ -448,6 +521,16 @@ class PropertySerializer(serializers.ModelSerializer):
                     )
                 }
             )
+
+        if is_published and self.instance:
+            if self.instance.requires_republish_approval:
+                raise serializers.ValidationError({
+                    "is_published": "Manager approval is required before this listing can be republished."
+                })
+            if self.instance.listing_expires_at and self.instance.listing_expires_at <= timezone.now():
+                raise serializers.ValidationError({
+                    "is_published": "Confirm listing availability before republishing an expired listing."
+                })
 
         withdrawal_reason = attrs.get(
             "withdrawal_reason", getattr(self.instance, "withdrawal_reason", "") if self.instance else ""

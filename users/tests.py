@@ -4,16 +4,60 @@ from unittest.mock import patch
 from django.core import mail
 from django.core.cache import cache
 from django.urls import reverse
+from django.test import override_settings
 from django.contrib.auth import get_user_model
 
 from rest_framework import status
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from agencies.models import Agency
 from properties.models import Property
 
 
 User = get_user_model()
+
+
+class LogoutAPITestCase(APITestCase):
+    def setUp(self):
+        self.agency = Agency.objects.create(
+            name="Logout Realty",
+            license_number="LOGOUT-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.user = User.objects.create_user(
+            email="logout@nexora.com",
+            password="Password123!",
+            full_name="Logout User",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+            is_email_verified=True,
+        )
+
+    def test_logout_blacklists_refresh_token(self):
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+        response = self.client.post(reverse("logout"), {"refresh": str(refresh)}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        self.client.credentials()
+        refresh_response = self.client.post(reverse("token_refresh"), {"refresh": str(refresh)}, format="json")
+        self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_rejects_another_users_refresh_token(self):
+        other = User.objects.create_user(
+            email="other.logout@nexora.com",
+            password="Password123!",
+            full_name="Other User",
+            agency=self.agency,
+            role=User.ROLE_AGENT,
+            is_email_verified=True,
+        )
+        access = RefreshToken.for_user(self.user).access_token
+        other_refresh = RefreshToken.for_user(other)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        response = self.client.post(reverse("logout"), {"refresh": str(other_refresh)}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class AuthenticationThrottleAPITestCase(APITestCase):
@@ -45,6 +89,89 @@ class AuthenticationThrottleAPITestCase(APITestCase):
             responses[10].status_code,
             status.HTTP_429_TOO_MANY_REQUESTS,
         )
+
+
+class AgentOTPEnvironmentPolicyTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.agency = Agency.objects.create(
+            name="Agent OTP Realty",
+            license_number="AGENT-OTP-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+        self.agent = User.objects.create_user(
+            email="unverified-agent@example.com",
+            password="Agent-Password-2026",
+            full_name="Unverified Agent",
+            agency=self.agency,
+            role=User.ROLE_AGENT,
+            is_email_verified=False,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    @override_settings(REQUIRE_AGENT_OTP_VERIFICATION=False)
+    @patch("users.views.send_login_verification_otp")
+    def test_local_agent_login_bypasses_otp_without_marking_email_verified(self, send_otp):
+        response = self.client.post(
+            reverse("login"),
+            {"email": self.agent.email, "password": "Agent-Password-2026"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+        send_otp.assert_not_called()
+        self.agent.refresh_from_db()
+        self.assertFalse(self.agent.is_email_verified)
+
+    @override_settings(REQUIRE_AGENT_OTP_VERIFICATION=True)
+    @patch("users.views.send_login_verification_otp")
+    def test_production_agent_login_requires_otp(self, send_otp):
+        response = self.client.post(
+            reverse("login"),
+            {"email": self.agent.email, "password": "Agent-Password-2026"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(response.data["otp_required"])
+        send_otp.assert_called_once_with(self.agent)
+
+    @override_settings(REQUIRE_AGENT_OTP_VERIFICATION=False)
+    @patch("users.views.send_login_verification_otp")
+    def test_local_setting_does_not_bypass_owner_otp(self, send_otp):
+        owner = User.objects.create_user(
+            email="unverified-owner@example.com",
+            password="Owner-Password-2026",
+            full_name="Unverified Owner",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+            is_email_verified=False,
+        )
+        response = self.client.post(
+            reverse("login"),
+            {"email": owner.email, "password": "Owner-Password-2026"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(response.data["otp_required"])
+        send_otp.assert_called_once_with(owner)
+
+    @override_settings(REQUIRE_AGENT_OTP_VERIFICATION=False)
+    @patch("users.views.send_login_verification_otp")
+    def test_local_agent_cannot_request_an_unnecessary_otp(self, send_otp):
+        response = self.client.post(
+            reverse("resend-login-otp"),
+            {"email": self.agent.email, "password": "Agent-Password-2026"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("disabled", response.data["detail"])
+        send_otp.assert_not_called()
 
 
 class AgentRolePermissionAPITestCase(APITestCase):

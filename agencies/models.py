@@ -1,9 +1,20 @@
 from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
+import uuid
 
 
 class Agency(models.Model):
+    WEBSITE_ONBOARDING_NOT_STARTED = "not_started"
+    WEBSITE_ONBOARDING_IN_PROGRESS = "in_progress"
+    WEBSITE_ONBOARDING_READY = "ready"
+    WEBSITE_ONBOARDING_COMPLETED = "completed"
+    WEBSITE_ONBOARDING_STATUS_CHOICES = [
+        (WEBSITE_ONBOARDING_NOT_STARTED, "Not started"),
+        (WEBSITE_ONBOARDING_IN_PROGRESS, "In progress"),
+        (WEBSITE_ONBOARDING_READY, "Ready to publish"),
+        (WEBSITE_ONBOARDING_COMPLETED, "Completed"),
+    ]
     LANGUAGE_ENGLISH = "en"
     LANGUAGE_NEPALI = "ne"
     LANGUAGE_CHOICES = [
@@ -55,6 +66,27 @@ class Agency(models.Model):
     custom_domain = models.CharField(max_length=255, blank=True)
     website_template = models.CharField(max_length=80, default="luxury-agency")
     website_config = models.JSONField(default=dict, blank=True)
+    website_draft_config = models.JSONField(default=dict, blank=True)
+    website_published_config = models.JSONField(default=dict, blank=True)
+    website_onboarding_status = models.CharField(
+        max_length=20,
+        choices=WEBSITE_ONBOARDING_STATUS_CHOICES,
+        default=WEBSITE_ONBOARDING_NOT_STARTED,
+    )
+    website_onboarding_step = models.PositiveSmallIntegerField(default=1)
+    website_completion_percentage = models.PositiveSmallIntegerField(default=0)
+    website_config_version = models.PositiveIntegerField(default=0)
+    website_draft_revision = models.PositiveIntegerField(default=0)
+    website_draft_updated_at = models.DateTimeField(null=True, blank=True)
+    website_draft_updated_by = models.ForeignKey(
+        "users.AgencyUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="website_drafts_updated",
+    )
+    website_onboarding_completed_at = models.DateTimeField(null=True, blank=True)
+    website_published_at = models.DateTimeField(null=True, blank=True)
     default_language = models.CharField(
         max_length=2, choices=LANGUAGE_CHOICES, default=LANGUAGE_ENGLISH
     )
@@ -64,6 +96,9 @@ class Agency(models.Model):
     use_nepali_digits = models.BooleanField(default=False)
     timezone = models.CharField(max_length=50, default="Asia/Kathmandu")
     message_templates = models.JSONField(default=dict, blank=True)
+    # Keep programmatic/admin-created agencies backward compatible. The public
+    # registration flow explicitly creates agencies as unpublished until their
+    # onboarding checklist is complete.
     is_website_published = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     subscription_expires_at = models.DateTimeField(null=True, blank=True)
@@ -119,3 +154,73 @@ class Agency(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class WebsiteVersion(models.Model):
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="website_versions")
+    version = models.PositiveIntegerField()
+    template_key = models.CharField(max_length=80)
+    schema_version = models.PositiveIntegerField(default=2)
+    config = models.JSONField()
+    published_at = models.DateTimeField(auto_now_add=True)
+    published_by = models.ForeignKey(
+        "users.AgencyUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="website_versions_published",
+    )
+    restored_from = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="restored_versions",
+    )
+
+    class Meta:
+        ordering = ["-version"]
+        constraints = [
+            models.UniqueConstraint(fields=["agency", "version"], name="unique_agency_website_version"),
+        ]
+
+    def __str__(self):
+        return f"{self.agency} website v{self.version}"
+
+
+class AgencyDomain(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_VERIFIED = "verified"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending verification"),
+        (STATUS_VERIFIED, "Verified"),
+        (STATUS_FAILED, "Verification failed"),
+    ]
+
+    agency = models.ForeignKey(Agency, on_delete=models.CASCADE, related_name="website_domains")
+    domain = models.CharField(max_length=253, unique=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    verification_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    is_active = models.BooleanField(default=False)
+    is_primary = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_primary", "domain"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["agency"],
+                condition=models.Q(is_primary=True),
+                name="unique_primary_domain_per_agency",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["domain", "status", "is_active"], name="agency_domain_lookup_idx"),
+        ]
+
+    def __str__(self):
+        return self.domain

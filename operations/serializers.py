@@ -1,6 +1,11 @@
+from datetime import datetime
+import json
+import re
+
 from django.contrib.auth.password_validation import validate_password
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 from rest_framework import serializers
 
 from users.models import AgencyUser
@@ -11,7 +16,7 @@ from .models import (
     AgentReview, Offer, Owner, Payment, PipelineStage, PublicSubmission,
     SavedProperty, SavedSearch, Subscription, SubscriptionPlan, Task,
 )
-from .validators import validate_custom_data
+from .validators import custom_field_in_use, validate_custom_data
 
 
 class AgencyValidationMixin:
@@ -164,7 +169,15 @@ class TaskSerializer(AgencyValidationMixin, serializers.ModelSerializer):
     class Meta:
         model = Task
         exclude = ["agency"]
-        read_only_fields = ["created_by", "completed_at", "created_at", "updated_at"]
+        read_only_fields = ["created_by", "completed_at", "generated_from", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        recurrence = attrs.get("recurrence", getattr(self.instance, "recurrence", ""))
+        due_at = attrs.get("due_at", getattr(self.instance, "due_at", None))
+        if recurrence and not due_at:
+            raise serializers.ValidationError({"due_at": "A due date is required for a recurring task."})
+        return attrs
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -232,12 +245,74 @@ class CustomFieldDefinitionSerializer(serializers.ModelSerializer):
         exclude = ["agency"]
         read_only_fields = ["created_at", "updated_at"]
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        agency = getattr(getattr(request, "user", None), "agency", None)
+        module = attrs.get("module", getattr(self.instance, "module", None))
+        key = attrs.get("key", getattr(self.instance, "key", None))
+        field_type = attrs.get(
+            "field_type", getattr(self.instance, "field_type", "text")
+        )
+        options = attrs.get("options", getattr(self.instance, "options", [])) or []
+        if not isinstance(options, list) or any(
+            not isinstance(item, str) or not item.strip() for item in options
+        ):
+            raise serializers.ValidationError({"options": "Options must be non-empty text values."})
+        normalized = [item.strip() for item in options]
+        if len({item.casefold() for item in normalized}) != len(normalized):
+            raise serializers.ValidationError({"options": "Duplicate options are not allowed."})
+        if field_type in {"select", "multiselect"} and not normalized:
+            raise serializers.ValidationError({"options": "Select fields require at least one option."})
+        if field_type not in {"select", "multiselect"} and normalized:
+            raise serializers.ValidationError({"options": "Only select fields can define options."})
+        attrs["options"] = normalized
+        if agency and CustomFieldDefinition.objects.filter(
+            agency=agency, module=module, key=key
+        ).exclude(pk=getattr(self.instance, "pk", None)).exists():
+            raise serializers.ValidationError({"key": "This key already exists in the selected module."})
+        if self.instance:
+            if module != self.instance.module or key != self.instance.key:
+                raise serializers.ValidationError({"key": "Module and API key cannot be changed after creation."})
+            if field_type != self.instance.field_type and custom_field_in_use(self.instance):
+                raise serializers.ValidationError({
+                    "field_type": "This field type cannot change while records contain values for it."
+                })
+        return attrs
+
 
 class PipelineStageSerializer(serializers.ModelSerializer):
     class Meta:
         model = PipelineStage
         exclude = ["agency"]
         read_only_fields = ["created_at", "updated_at"]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        agency = getattr(getattr(request, "user", None), "agency", None)
+        module = attrs.get("module", getattr(self.instance, "module", None))
+        key = attrs.get("key", getattr(self.instance, "key", None))
+        sort_order = attrs.get("sort_order", getattr(self.instance, "sort_order", 0))
+        is_closed = attrs.get("is_closed", getattr(self.instance, "is_closed", False))
+        is_won = attrs.get("is_won", getattr(self.instance, "is_won", False))
+        if is_won and not is_closed:
+            raise serializers.ValidationError({"is_closed": "A won stage must also be closed."})
+        color = attrs.get("color", getattr(self.instance, "color", "#496B5A"))
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color or ""):
+            raise serializers.ValidationError({"color": "Enter a six-digit hex colour."})
+        if agency:
+            peers = PipelineStage.objects.filter(agency=agency, module=module)
+            peers = peers.exclude(pk=getattr(self.instance, "pk", None))
+            if peers.filter(key=key).exists():
+                raise serializers.ValidationError({"key": "This stage key already exists in the pipeline."})
+            if peers.filter(sort_order=sort_order).exists():
+                raise serializers.ValidationError({"sort_order": "Each stage must have a unique order."})
+            if is_won and peers.filter(is_won=True).exists():
+                raise serializers.ValidationError({"is_won": "Only one custom won stage is allowed per pipeline."})
+        if self.instance and (
+            module != self.instance.module or key != self.instance.key
+        ):
+            raise serializers.ValidationError({"key": "Pipeline and stage key cannot be changed after creation."})
+        return attrs
 
 
 class AuditLogSerializer(serializers.ModelSerializer):
@@ -293,7 +368,48 @@ class SavedSearchSerializer(serializers.ModelSerializer):
     class Meta:
         model = SavedSearch
         exclude = ["agency", "customer"]
-        read_only_fields = ["last_notified_at", "created_at", "updated_at"]
+        read_only_fields = [
+            "last_notified_at", "last_checked_at", "last_match_count",
+            "last_check_error", "created_at", "updated_at",
+        ]
+
+    def validate_filters(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Filters must be an object.")
+        allowed = {"property_type", "purpose", "province", "district", "city", "location", "price_min", "price_max"}
+        unknown = sorted(set(value) - allowed)
+        if unknown:
+            raise serializers.ValidationError(f"Unsupported filters: {', '.join(unknown)}.")
+        normalized = {}
+        for key, raw in value.items():
+            if raw in (None, ""):
+                continue
+            if key in {"price_min", "price_max"}:
+                try:
+                    amount = float(raw)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError({key: "Enter a valid number."})
+                if amount < 0:
+                    raise serializers.ValidationError({key: "Price cannot be negative."})
+                normalized[key] = amount
+            else:
+                normalized[key] = str(raw).strip()
+        if normalized.get("price_min") is not None and normalized.get("price_max") is not None:
+            if normalized["price_min"] > normalized["price_max"]:
+                raise serializers.ValidationError("Minimum price cannot exceed maximum price.")
+        return normalized
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        customer = self.context.get("customer")
+        filters = attrs.get("filters", getattr(self.instance, "filters", {}))
+        if customer:
+            duplicates = customer.saved_searches.all()
+            if self.instance:
+                duplicates = duplicates.exclude(pk=self.instance.pk)
+            if any(saved.filters == filters for saved in duplicates.only("filters")):
+                raise serializers.ValidationError({"filters": "An equivalent saved search already exists."})
+        return attrs
 
 
 class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSerializer):
@@ -339,6 +455,10 @@ class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSeriali
                 errors["metadata"] = "Choose a reason for reporting this listing."
         if errors:
             raise serializers.ValidationError(errors)
+        if len(json.dumps(metadata, ensure_ascii=False, default=str).encode("utf-8")) > 4096:
+            raise serializers.ValidationError({"metadata": "Metadata must be 4 KB or smaller."})
+        if len((attrs.get("message") or "").encode("utf-8")) > 8000:
+            raise serializers.ValidationError({"message": "Message must be 8 KB or smaller."})
         return attrs
 
 
@@ -373,6 +493,54 @@ class AppointmentAvailabilitySerializer(AgencyValidationMixin, serializers.Model
             raise serializers.ValidationError("Weekday must be between 0 (Monday) and 6 (Sunday).")
         return value
 
+    def validate_agent(self, value):
+        request = self.context.get("request")
+        if value.role != AgencyUser.ROLE_AGENT or not value.is_active:
+            raise serializers.ValidationError("Choose an active agent.")
+        if request and request.user.is_authenticated:
+            if request.user.role == AgencyUser.ROLE_AGENT and value.pk != request.user.pk:
+                raise serializers.ValidationError("Agents can only manage their own availability.")
+            if request.user.role != AgencyUser.ROLE_SUPER_ADMIN and value.agency_id != request.user.agency_id:
+                raise serializers.ValidationError("Choose an agent from your agency.")
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        agent = attrs.get("agent", getattr(self.instance, "agent", None))
+        weekday = attrs.get("weekday", getattr(self.instance, "weekday", None))
+        start = attrs.get("start_time", getattr(self.instance, "start_time", None))
+        end = attrs.get("end_time", getattr(self.instance, "end_time", None))
+        slot_minutes = attrs.get("slot_minutes", getattr(self.instance, "slot_minutes", 30))
+
+        errors = {}
+        if start and end and end <= start:
+            errors["end_time"] = "End time must be after start time."
+        if slot_minutes < 10 or slot_minutes > 480:
+            errors["slot_minutes"] = "Slot length must be between 10 and 480 minutes."
+        if start and end:
+            window_minutes = int(
+                (datetime.combine(timezone.localdate(), end) - datetime.combine(timezone.localdate(), start)).total_seconds() // 60
+            )
+            if window_minutes > 0 and slot_minutes > window_minutes:
+                errors["slot_minutes"] = "Slot length cannot exceed the availability window."
+            elif window_minutes > 0 and window_minutes % slot_minutes != 0:
+                errors["slot_minutes"] = "Availability window must divide evenly into appointment slots."
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        if agent and weekday is not None and start and end:
+            overlapping = AppointmentAvailability.objects.filter(
+                agent=agent,
+                weekday=weekday,
+                start_time__lt=end,
+                end_time__gt=start,
+            )
+            if self.instance:
+                overlapping = overlapping.exclude(pk=self.instance.pk)
+            if overlapping.exists():
+                raise serializers.ValidationError({"start_time": "This availability window overlaps an existing window."})
+        return attrs
+
 
 class AppointmentSerializer(AgencyValidationMixin, serializers.ModelSerializer):
     agent_name = serializers.CharField(source="agent.full_name", read_only=True)
@@ -383,14 +551,103 @@ class AppointmentSerializer(AgencyValidationMixin, serializers.ModelSerializer):
         model = Appointment
         exclude = ["agency"]
         read_only_fields = ["created_at", "updated_at"]
+        extra_kwargs = {"agent": {"required": True, "allow_null": False}}
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        agent = attrs.get("agent", getattr(self.instance, "agent", None))
         start = attrs.get("starts_at", getattr(self.instance, "starts_at", None))
         end = attrs.get("ends_at", getattr(self.instance, "ends_at", None))
         if start and end and end <= start:
             raise serializers.ValidationError({"ends_at": "End time must be after start time."})
+
+        request = self.context.get("request")
+        if agent:
+            if agent.role != AgencyUser.ROLE_AGENT or not agent.is_active:
+                raise serializers.ValidationError({"agent": "Choose an active agent."})
+            if request and request.user.is_authenticated:
+                if request.user.role == AgencyUser.ROLE_AGENT and agent.pk != request.user.pk:
+                    raise serializers.ValidationError({"agent": "Agents can only manage their own appointments."})
+                if request.user.role != AgencyUser.ROLE_SUPER_ADMIN and agent.agency_id != request.user.agency_id:
+                    raise serializers.ValidationError({"agent": "Choose an agent from your agency."})
+
+        schedule_changed = self.instance is None or any(
+            field in attrs for field in ("agent", "starts_at", "ends_at")
+        )
+        if not schedule_changed or not (agent and start and end):
+            return attrs
+
+        if start <= timezone.now():
+            raise serializers.ValidationError({"starts_at": "Appointment time must be in the future."})
+
+        local_start = timezone.localtime(start)
+        local_end = timezone.localtime(end)
+        if local_start.date() != local_end.date():
+            raise serializers.ValidationError({"ends_at": "Appointment must start and end on the same day."})
+
+        start_time = local_start.time().replace(tzinfo=None)
+        end_time = local_end.time().replace(tzinfo=None)
+        candidates = AppointmentAvailability.objects.filter(
+            agency_id=agent.agency_id,
+            agent=agent,
+            weekday=local_start.weekday(),
+            is_active=True,
+            start_time__lte=start_time,
+            end_time__gte=end_time,
+        )
+        matching_window = None
+        duration_seconds = (end - start).total_seconds()
+        for window in candidates:
+            offset_seconds = (
+                datetime.combine(local_start.date(), start_time) - datetime.combine(local_start.date(), window.start_time)
+            ).total_seconds()
+            if duration_seconds == window.slot_minutes * 60 and offset_seconds % (window.slot_minutes * 60) == 0:
+                matching_window = window
+                break
+        if matching_window is None:
+            raise serializers.ValidationError(
+                {"starts_at": "Choose an available appointment slot with the configured slot length."}
+            )
+
+        agency_id = agent.agency_id
+        conflicts = Appointment.objects.filter(
+            agency_id=agency_id,
+            agent=agent,
+            starts_at__lt=end,
+            ends_at__gt=start,
+        ).exclude(status="cancelled")
+        if self.instance:
+            conflicts = conflicts.exclude(pk=self.instance.pk)
+        if conflicts.exists():
+            raise serializers.ValidationError({"starts_at": "This agent is already booked during that time."})
+
+        email = attrs.get("email", getattr(self.instance, "email", ""))
+        if email:
+            duplicate = Appointment.objects.filter(
+                agency_id=agency_id,
+                email__iexact=email,
+                starts_at__lt=end,
+                ends_at__gt=start,
+            ).exclude(status="cancelled")
+            if self.instance:
+                duplicate = duplicate.exclude(pk=self.instance.pk)
+            if duplicate.exists():
+                raise serializers.ValidationError({"starts_at": "This customer already has an appointment during that time."})
         return attrs
+
+
+class PublicAppointmentSerializer(AppointmentSerializer):
+    """Public-safe appointment input; workflow fields remain server controlled."""
+
+    class Meta:
+        model = Appointment
+        fields = [
+            "id", "agent", "agent_name", "property", "property_title",
+            "full_name", "email", "phone", "starts_at", "ends_at", "notes",
+            "status", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "status", "created_at", "updated_at"]
+        extra_kwargs = {"agent": {"required": True, "allow_null": False}}
 
 
 class SubscriptionPlanSerializer(serializers.ModelSerializer):
