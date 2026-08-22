@@ -1,5 +1,5 @@
 import json
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from django.conf import settings
@@ -118,18 +118,32 @@ def exchange_short_token_for_long_token(short_lived_token):
 
 def get_facebook_pages(user_access_token):
     url = f"{graph_base_url()}/me/accounts"
+    params = {
+        "fields": (
+            "id,name,access_token,"
+            "instagram_business_account{id,username,name}"
+        ),
+        "limit": 100,
+    }
+    pages = []
 
-    response = requests.get(
-        url,
-        params={
-            "fields": "id,name,access_token,instagram_business_account",
-        },
-        headers={"Authorization": f"Bearer {user_access_token}"},
-        timeout=meta_request_timeout(),
-    )
-
-    raise_for_meta_error(response)
-    return response.json().get("data", [])
+    # Meta paginates /me/accounts. Following the provider-issued `next` URL is
+    # necessary for agencies that administer more than the first result page.
+    for _ in range(10):
+        response = requests.get(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {user_access_token}"},
+            timeout=meta_request_timeout(),
+        )
+        raise_for_meta_error(response)
+        payload = response.json()
+        pages.extend(payload.get("data", []))
+        url = (payload.get("paging") or {}).get("next")
+        if not url:
+            break
+        params = None
+    return pages
 
 
 def get_instagram_account_from_page(page_id, page_access_token):
@@ -322,6 +336,85 @@ def create_instagram_image_container(
     return response.json()
 
 
+def create_instagram_reel_container(
+    instagram_account_id,
+    page_access_token,
+    video_url,
+    caption="",
+):
+    payload = {
+        "media_type": "REELS",
+        "video_url": video_url,
+        "share_to_feed": "true",
+        "access_token": page_access_token,
+    }
+    if caption:
+        payload["caption"] = caption
+    response = requests.post(
+        f"{graph_base_url()}/{instagram_account_id}/media",
+        data=payload,
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def create_facebook_reel_session(page_id, page_access_token):
+    response = requests.post(
+        f"{graph_base_url()}/{page_id}/video_reels",
+        data={
+            "upload_phase": "start",
+            "access_token": page_access_token,
+        },
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def upload_facebook_hosted_reel(upload_url, page_access_token, video_url):
+    hostname = (urlsplit(upload_url).hostname or "").lower()
+    if not hostname.endswith(".facebook.com"):
+        raise MetaAPIError("Meta returned an invalid Facebook Reel upload URL.")
+    response = requests.post(
+        upload_url,
+        headers={
+            "Authorization": f"OAuth {page_access_token}",
+            "file_url": video_url,
+        },
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    data = response.json()
+    if not data.get("success"):
+        raise MetaAPIError("Meta did not confirm the Facebook Reel upload.")
+    return data
+
+
+def publish_facebook_reel_session(
+    page_id,
+    page_access_token,
+    video_id,
+    description="",
+):
+    response = requests.post(
+        f"{graph_base_url()}/{page_id}/video_reels",
+        data={
+            "upload_phase": "finish",
+            "video_state": "PUBLISHED",
+            "video_id": video_id,
+            "description": description,
+            "access_token": page_access_token,
+        },
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    data = response.json()
+    if not data.get("success"):
+        raise MetaAPIError("Meta did not accept the Facebook Reel for publishing.")
+    return data
+
+
 def create_instagram_carousel_container(
     instagram_account_id,
     page_access_token,
@@ -351,6 +444,23 @@ def get_instagram_container_status(container_id, page_access_token):
     )
     raise_for_meta_error(response)
     return response.json()
+
+
+def get_instagram_content_publishing_limit(
+    instagram_account_id,
+    page_access_token,
+):
+    response = requests.get(
+        f"{graph_base_url()}/{instagram_account_id}/content_publishing_limit",
+        params={
+            "fields": "quota_usage,config",
+            "access_token": page_access_token,
+        },
+        timeout=instagram_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    data = response.json().get("data", [])
+    return data[0] if data else {}
 
 
 def publish_instagram_container(

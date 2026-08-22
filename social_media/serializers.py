@@ -1,16 +1,20 @@
 import json
 
 from django.db import transaction
+from django.utils import timezone
 from PIL import Image, UnidentifiedImageError
 from rest_framework import serializers
 
 from properties.models import Property
 from .models import (
     SOCIAL_PUBLISH_PLATFORM_CHOICES,
+    SocialAccount,
+    SocialConnectionSession,
     SocialPost,
     SocialPostMedia,
     SocialPublishResult,
 )
+from .services.video import ReelValidationError, compress_reel_upload
 
 
 class MultipartListField(serializers.ListField):
@@ -80,7 +84,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
         max_length=SocialPostMedia.MAX_IMAGES_PER_POST,
     )
     media_order = MultipartJSONField(required=False, write_only=True)
-    target_platforms = serializers.ListField(
+    target_platforms = MultipartListField(
         child=serializers.ChoiceField(
             choices=SOCIAL_PUBLISH_PLATFORM_CHOICES
         ),
@@ -91,6 +95,7 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "target_platforms form-data key for multipart requests."
         ),
     )
+    video = serializers.FileField(required=False, allow_null=True)
 
     class Meta:
         model = SocialPost
@@ -102,8 +107,14 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "property_title",
             "platform",
             "target_platforms",
+            "post_format",
             "caption",
             "image",
+            "video",
+            "video_duration_seconds",
+            "video_width",
+            "video_height",
+            "video_size_bytes",
             "media",
             "images",
             "media_order",
@@ -124,6 +135,10 @@ class SocialPostSerializer(serializers.ModelSerializer):
             "published_at",
             "error_message",
             "external_post_id",
+            "video_duration_seconds",
+            "video_width",
+            "video_height",
+            "video_size_bytes",
         ]
 
     def get_property_title(self, obj) -> str | None:
@@ -189,6 +204,16 @@ class SocialPostSerializer(serializers.ModelSerializer):
                     "4:5 and 1.91:1."
                 )
         return images
+
+    def validate_video(self, video):
+        if video is None:
+            return video
+        try:
+            compressed = compress_reel_upload(video)
+        except ReelValidationError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        self._compressed_reel = compressed
+        return compressed.file
 
     def _prepare_media_plan(self, attrs):
         existing_items = list(self.instance.media_items.all()) if self.instance else []
@@ -338,8 +363,36 @@ class SocialPostSerializer(serializers.ModelSerializer):
                 transaction.on_commit(lambda name=name, storage=storage: storage.delete(name))
 
     def validate(self, attrs):
+        self._compressed_reel = getattr(self, "_compressed_reel", None)
         self.media_changed = False
         self._prepare_media_plan(attrs)
+        post_format = attrs.get(
+            "post_format",
+            self.instance.post_format if self.instance else SocialPost.FORMAT_IMAGE,
+        )
+        if self.instance and post_format != self.instance.post_format:
+            raise serializers.ValidationError(
+                {"post_format": "Create a new post to change between an image post and a Reel."}
+            )
+        if post_format == SocialPost.FORMAT_REEL:
+            if self._media_plan:
+                raise serializers.ValidationError(
+                    {"images": "A Reel accepts one video and cannot contain images."}
+                )
+            reel_video = attrs.get(
+                "video",
+                self.instance.video if self.instance else None,
+            )
+            if not reel_video:
+                raise serializers.ValidationError(
+                    {"video": "Upload a video for the Reel."}
+                )
+        elif "video" in attrs and attrs.get("video"):
+            raise serializers.ValidationError(
+                {"video": "Select the Reel format before uploading a video."}
+            )
+
+        self.media_changed = self.media_changed or "video" in attrs
         status_value = attrs.get(
             "status",
             self.instance.status if self.instance else SocialPost.STATUS_DRAFT,
@@ -362,6 +415,33 @@ class SocialPostSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"social_account": "A connected account is required."}
                 )
+            if scheduled_at <= timezone.now():
+                raise serializers.ValidationError(
+                    {"scheduled_at": "Scheduled time must be in the future."}
+                )
+            target_platforms = attrs.get(
+                "target_platforms",
+                self.instance.target_platforms if self.instance else [],
+            ) or [attrs.get("platform", self.instance.platform if self.instance else None)]
+            for target_platform in target_platforms:
+                if target_platform == social_account.platform:
+                    continue
+                counterpart_exists = SocialAccount.objects.filter(
+                    agency=social_account.agency,
+                    provider=SocialAccount.PROVIDER_META,
+                    platform=target_platform,
+                    page_id=social_account.page_id,
+                    status=SocialAccount.STATUS_CONNECTED,
+                ).exists()
+                if not counterpart_exists:
+                    raise serializers.ValidationError(
+                        {
+                            "target_platforms": (
+                                f"No connected {target_platform} account is linked "
+                                "to the selected Page."
+                            )
+                        }
+                    )
         return attrs
 
     @transaction.atomic
@@ -369,6 +449,15 @@ class SocialPostSerializer(serializers.ModelSerializer):
         images = validated_data.pop("images", [])
         validated_data.pop("media_order", None)
         validated_data.pop("image", None)
+        if self._compressed_reel:
+            validated_data.update(
+                {
+                    "video_duration_seconds": self._compressed_reel.duration_seconds,
+                    "video_width": self._compressed_reel.width,
+                    "video_height": self._compressed_reel.height,
+                    "video_size_bytes": self._compressed_reel.size_bytes,
+                }
+            )
         post = super().create(validated_data)
         self._apply_media_plan(post, images)
         return post
@@ -378,9 +467,29 @@ class SocialPostSerializer(serializers.ModelSerializer):
         images = validated_data.pop("images", [])
         validated_data.pop("media_order", None)
         validated_data.pop("image", None)
+        old_video_name = instance.video.name if instance.video else ""
+        old_video_storage = instance.video.storage if instance.video else None
+        if self._compressed_reel:
+            validated_data.update(
+                {
+                    "video_duration_seconds": self._compressed_reel.duration_seconds,
+                    "video_width": self._compressed_reel.width,
+                    "video_height": self._compressed_reel.height,
+                    "video_size_bytes": self._compressed_reel.size_bytes,
+                }
+            )
         post = super().update(instance, validated_data)
         if self.media_changed:
             self._apply_media_plan(post, images)
+        if (
+            self._compressed_reel
+            and old_video_name
+            and old_video_name != post.video.name
+            and old_video_storage
+        ):
+            transaction.on_commit(
+                lambda: old_video_storage.delete(old_video_name)
+            )
         return post
 
 
@@ -395,8 +504,39 @@ class SocialPublishRequestSerializer(serializers.Serializer):
 
     def validate_platforms(self, value):
         return list(dict.fromkeys(value))
-    
-from .models import SocialAccount
+
+
+class MetaPageSelectionSerializer(serializers.Serializer):
+    page_ids = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        allow_empty=False,
+        max_length=25,
+    )
+
+    def validate_page_ids(self, value):
+        return list(dict.fromkeys(value))
+
+
+class SocialConnectionSessionSerializer(serializers.ModelSerializer):
+    pages = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SocialConnectionSession
+        fields = ["token", "provider", "pages", "expires_at"]
+
+    def get_pages(self, obj):
+        return [
+            {
+                "id": str(page.get("id", "")),
+                "name": page.get("name") or "Unnamed Page",
+                "has_instagram": bool(page.get("instagram_business_account")),
+                "instagram_username": (
+                    (page.get("instagram_business_account") or {}).get("username")
+                ),
+            }
+            for page in obj.candidate_pages
+            if page.get("id")
+        ]
 
 
 class SocialAccountSerializer(serializers.ModelSerializer):

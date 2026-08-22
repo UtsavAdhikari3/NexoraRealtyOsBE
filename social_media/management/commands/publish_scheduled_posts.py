@@ -3,12 +3,21 @@ from django.utils import timezone
 
 from social_media.models import SocialPost
 from social_media.services.publishing import publish_social_post
+from operations.scheduler import scheduled_job
 
 
 class Command(BaseCommand):
     help = "Publish due scheduled social posts."
 
     def handle(self, *args, **options):
+        with scheduled_job("social-publishing", lease_seconds=600) as job:
+            if not job.claimed:
+                self.stdout.write("Social publishing is already running; skipped.")
+                return
+            result = self.publish_due_posts()
+            job.result = result
+
+    def publish_due_posts(self):
         posts = SocialPost.objects.filter(
             status=SocialPost.STATUS_SCHEDULED,
             scheduled_at__lte=timezone.now(),
@@ -37,3 +46,4 @@ class Command(BaseCommand):
                 f"{partial} partially published; {failed} failed."
             )
         )
+        return {"published": published, "partial": partial, "failed": failed}

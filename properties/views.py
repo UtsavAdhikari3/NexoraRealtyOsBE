@@ -928,6 +928,25 @@ class PropertyDistributionSocialDraftView(APIView):
             agency=request.user.agency,
             status=SocialAccount.STATUS_CONNECTED,
         )
+        target_platforms = payload.get("platforms") or [account.platform]
+        for target_platform in target_platforms:
+            if target_platform == account.platform:
+                continue
+            if not SocialAccount.objects.filter(
+                agency=request.user.agency,
+                provider=SocialAccount.PROVIDER_META,
+                platform=target_platform,
+                page_id=account.page_id,
+                status=SocialAccount.STATUS_CONNECTED,
+            ).exists():
+                raise ValidationError(
+                    {
+                        "platforms": (
+                            f"No connected {target_platform} account is linked "
+                            "to the selected Page."
+                        )
+                    }
+                )
         asset_type = payload.get("asset_type") or (
             "facebook_post" if account.platform == "facebook" else "instagram_post"
         )
@@ -949,7 +968,7 @@ class PropertyDistributionSocialDraftView(APIView):
             property=property_obj,
             social_account=account,
             platform=account.platform,
-            target_platforms=[account.platform],
+            target_platforms=target_platforms,
             caption=captions(property_obj, url)[language][account.platform],
             status=SocialPost.STATUS_DRAFT,
             created_by=request.user,

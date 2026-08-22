@@ -5,6 +5,7 @@ import requests
 from django.core.files.base import ContentFile
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from urllib.parse import parse_qs, urlsplit
 from PIL import Image
 from rest_framework import status
@@ -18,6 +19,7 @@ from social_media.models import (
     SocialPublishResult,
 )
 from social_media.services.meta import MetaAPIError
+from social_media.services.publishing import enforce_instagram_publish_quota
 from users.models import AgencyUser
 
 
@@ -267,13 +269,23 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             "http://localhost:5173/social-media",
         )
         self.assertEqual(
-            parse_qs(redirect_parts.query),
-            {
-                "meta_connection": ["success"],
-                "connected_count": ["2"],
-                "warning_count": ["0"],
-            },
+            parse_qs(redirect_parts.query)["meta_connection"],
+            ["select"],
         )
+        session_token = parse_qs(redirect_parts.query)["connection_session"][0]
+        self.assertFalse(SocialAccount.objects.filter(external_id="page-discovered").exists())
+        self.client.force_authenticate(user=self.owner)
+        with patch(
+            "social_media.views.subscribe_page_to_webhooks",
+            return_value={"success": True},
+        ):
+            selection = self.client.post(
+                reverse("meta-connection-session", kwargs={"token": session_token}),
+                {"page_ids": ["page-discovered"]},
+                format="json",
+            )
+        self.assertEqual(selection.status_code, status.HTTP_200_OK)
+        self.assertEqual(selection.data["connected_count"], 2)
         instagram = SocialAccount.objects.get(
             agency=self.agency,
             platform=SocialAccount.PLATFORM_INSTAGRAM,
@@ -316,24 +328,44 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             agency=self.agency,
             user=self.owner,
         )
+        response = self.client.get(
+            reverse("meta-connection-callback"),
+            {"code": "test-code", "state": oauth_state.state},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        session_token = parse_qs(urlsplit(response["Location"]).query)[
+            "connection_session"
+        ][0]
+        self.client.force_authenticate(user=self.owner)
         with patch(
             "social_media.views.subscribe_page_to_webhooks",
             side_effect=MetaAPIError("Missing pages_messaging permission.", code=200),
         ):
-            response = self.client.get(
-                reverse("meta-connection-callback"),
-                {"code": "test-code", "state": oauth_state.state},
+            selection = self.client.post(
+                reverse("meta-connection-session", kwargs={"token": session_token}),
+                {"page_ids": ["page-warning"]},
+                format="json",
             )
+        self.assertEqual(selection.status_code, status.HTTP_200_OK)
+        self.assertEqual(selection.data["connected_count"], 1)
+        self.assertEqual(selection.data["warning_count"], 1)
 
-        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
-        self.assertEqual(
-            parse_qs(urlsplit(response["Location"]).query),
-            {
-                "meta_connection": ["success"],
-                "connected_count": ["1"],
-                "warning_count": ["1"],
-            },
+    def test_agent_cannot_manage_meta_connections(self):
+        agent = AgencyUser.objects.create_user(
+            email="social-agent@example.com",
+            password="Password123",
+            full_name="Social Agent",
+            agency=self.agency,
+            role=AgencyUser.ROLE_AGENT,
         )
+        self.client.force_authenticate(user=agent)
+        start = self.client.get(reverse("meta-connection-start"))
+        disconnect = self.client.delete(
+            reverse("social-account-disconnect", kwargs={"pk": self.account.id})
+        )
+        self.assertEqual(start.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(disconnect.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_cannot_select_another_agencys_social_account(self):
         other_account = SocialAccount.objects.create(
@@ -379,6 +411,26 @@ class SocialPublishingMVPAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["target_platforms"], ["facebook", "instagram"])
+
+    @override_settings(INSTAGRAM_PUBLISH_QUOTA_LIMIT=1)
+    def test_instagram_local_quota_blocks_another_publish(self):
+        published_post = SocialPost.objects.create(
+            agency=self.agency,
+            social_account=self.instagram_account,
+            platform="instagram",
+            caption="Already published",
+            created_by=self.owner,
+        )
+        SocialPublishResult.objects.create(
+            post=published_post,
+            social_account=self.instagram_account,
+            platform="instagram",
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="ig-existing",
+            published_at=timezone.now(),
+        )
+        with self.assertRaisesMessage(ValueError, "publishing quota"):
+            enforce_instagram_publish_quota(self.instagram_account)
 
     @override_settings(PUBLIC_API_BASE_URL="http://api.example.com")
     def test_instagram_publish_rejects_non_https_public_media_origin(self):

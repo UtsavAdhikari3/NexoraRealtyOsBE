@@ -3,6 +3,14 @@ from django.db import models
 
 
 class SocialPost(models.Model):
+    FORMAT_IMAGE = "image"
+    FORMAT_REEL = "reel"
+
+    FORMAT_CHOICES = [
+        (FORMAT_IMAGE, "Image post"),
+        (FORMAT_REEL, "Reel"),
+    ]
+
     PLATFORM_FACEBOOK = "facebook"
     PLATFORM_INSTAGRAM = "instagram"
     PLATFORM_TIKTOK = "tiktok"
@@ -54,6 +62,11 @@ class SocialPost(models.Model):
 
     platform = models.CharField(max_length=30, choices=PLATFORM_CHOICES)
     target_platforms = models.JSONField(default=list, blank=True)
+    post_format = models.CharField(
+        max_length=20,
+        choices=FORMAT_CHOICES,
+        default=FORMAT_IMAGE,
+    )
     caption = models.TextField()
 
     image = models.ImageField(
@@ -61,6 +74,15 @@ class SocialPost(models.Model):
         null=True,
         blank=True,
     )
+    video = models.FileField(
+        upload_to="social_posts/reels/",
+        null=True,
+        blank=True,
+    )
+    video_duration_seconds = models.FloatField(null=True, blank=True)
+    video_width = models.PositiveIntegerField(null=True, blank=True)
+    video_height = models.PositiveIntegerField(null=True, blank=True)
+    video_size_bytes = models.PositiveIntegerField(null=True, blank=True)
 
     status = models.CharField(
         max_length=30,
@@ -252,6 +274,63 @@ class SocialOAuthState(models.Model):
     def mark_used(self):
         self.used_at = timezone.now()
         self.save(update_fields=["used_at"])
+
+
+class SocialConnectionSession(models.Model):
+    """Short-lived server-side handoff used to select Meta Pages safely.
+
+    Page and user access tokens never leave the API. The payload is erased as
+    soon as the user confirms the Pages they want to connect.
+    """
+
+    token = models.CharField(max_length=255, unique=True, default=secrets.token_urlsafe)
+    agency = models.ForeignKey(
+        "agencies.Agency",
+        on_delete=models.CASCADE,
+        related_name="social_connection_sessions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="social_connection_sessions",
+    )
+    provider = models.CharField(max_length=30, default=SocialAccount.PROVIDER_META)
+    candidate_pages = models.JSONField(default=list, blank=True)
+    user_access_token = models.TextField(blank=True)
+    expires_at = models.DateTimeField()
+    completed_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    @classmethod
+    def create_session(cls, *, agency, user, pages, user_access_token):
+        return cls.objects.create(
+            agency=agency,
+            user=user,
+            candidate_pages=pages,
+            user_access_token=user_access_token,
+            expires_at=timezone.now() + timezone.timedelta(minutes=15),
+        )
+
+    @property
+    def is_valid(self):
+        return (
+            self.completed_at is None
+            and self.expires_at > timezone.now()
+            and bool(self.candidate_pages)
+            and bool(self.user_access_token)
+        )
+
+    def complete(self):
+        self.completed_at = timezone.now()
+        self.candidate_pages = []
+        self.user_access_token = ""
+        self.save(
+            update_fields=[
+                "completed_at",
+                "candidate_pages",
+                "user_access_token",
+            ]
+        )
 
 
 class SocialPublishResult(models.Model):

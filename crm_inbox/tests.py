@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 
 from agencies.models import Agency
 from leads.models import Lead
-from social_media.models import SocialAccount
+from social_media.models import SocialAccount, SocialPost, SocialPublishResult
 from users.models import AgencyUser
 
 from .models import Conversation, SocialContact, SocialMessage, WebhookEvent
@@ -137,6 +137,38 @@ class UnifiedInboxAPITestCase(APITestCase):
         self.assertEqual(conversation.platform, "facebook")
         self.assertEqual(conversation.unread_count, 1)
 
+    def test_inbound_referral_creates_one_attributed_lead(self):
+        post = SocialPost.objects.create(
+            agency=self.agency,
+            social_account=self.facebook,
+            platform="facebook",
+            caption="Attributed listing",
+            created_by=self.owner,
+        )
+        SocialPublishResult.objects.create(
+            post=post,
+            social_account=self.facebook,
+            platform="facebook",
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-1_post-1",
+        )
+        payload = self.facebook_payload()
+        payload["entry"][0]["messaging"][0]["referral"] = {
+            "source": "SHORTLINK",
+            "post_id": "page-1_post-1",
+        }
+
+        self.signed_webhook(payload)
+        self.signed_webhook(payload)
+
+        conversation = Conversation.objects.get()
+        self.assertEqual(conversation.source_social_post_id, post.id)
+        self.assertIsNotNone(conversation.linked_lead_id)
+        self.assertEqual(Lead.objects.count(), 1)
+        lead = Lead.objects.get()
+        self.assertEqual(lead.source, "facebook")
+        self.assertEqual(lead.custom_data["source_social_post_id"], post.id)
+
     def test_instagram_message_is_normalized_into_same_inbox(self):
         payload = {
             "object": "instagram",
@@ -192,6 +224,7 @@ class UnifiedInboxAPITestCase(APITestCase):
         self.assertEqual(reply.data["delivery_status"], "sent")
         send_mock.assert_called_once()
 
+    @override_settings(SOCIAL_AUTO_CREATE_LEADS=False)
     def test_create_lead_and_mark_conversation_read(self):
         self.signed_webhook(self.facebook_payload())
         conversation = Conversation.objects.get()

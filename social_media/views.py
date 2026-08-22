@@ -2,9 +2,11 @@ import requests
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.utils import timezone
+from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import SocialPost
 from .serializers import SocialPostSerializer, SocialPublishRequestSerializer
@@ -13,8 +15,12 @@ from django.shortcuts import get_object_or_404, redirect
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .models import SocialAccount, SocialOAuthState
-from .serializers import SocialAccountSerializer
+from .models import SocialAccount, SocialConnectionSession, SocialOAuthState
+from .serializers import (
+    MetaPageSelectionSerializer,
+    SocialAccountSerializer,
+    SocialConnectionSessionSerializer,
+)
 from .services.meta import (
     build_meta_oauth_url,
     exchange_code_for_short_token,
@@ -29,6 +35,141 @@ from .services.meta import (
     get_facebook_post_photo_id,
 )
 from .services.publishing import publish_social_post
+from users.models import AgencyUser
+
+
+SOCIAL_CONNECTION_MANAGER_ROLES = {
+    AgencyUser.ROLE_AGENCY_OWNER,
+    AgencyUser.ROLE_AGENCY_MANAGER,
+}
+
+
+def require_social_connection_manager(user):
+    if user.role not in SOCIAL_CONNECTION_MANAGER_ROLES:
+        raise PermissionDenied(
+            "Only an agency owner or manager can manage social connections."
+        )
+    if not user.agency_id:
+        raise PermissionDenied("You must belong to an agency.")
+
+
+def connect_selected_meta_pages(*, session, selected_page_ids):
+    pages_by_id = {
+        str(page.get("id")): page
+        for page in session.candidate_pages
+        if page.get("id")
+    }
+    selected_pages = [pages_by_id[page_id] for page_id in selected_page_ids]
+    connected_accounts = []
+    connection_warnings = []
+
+    for page in selected_pages:
+        page_id = str(page["id"])
+        page_name = page.get("name")
+        page_access_token = page.get("access_token")
+        if not page_access_token:
+            connection_warnings.append(
+                {
+                    "page_id": page_id,
+                    "capability": "page_connection",
+                    "message": "Meta did not return an access token for this Page.",
+                }
+            )
+            continue
+
+        facebook_account, _ = SocialAccount.objects.update_or_create(
+            agency=session.agency,
+            provider=SocialAccount.PROVIDER_META,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            external_id=page_id,
+            defaults={
+                "name": page_name,
+                "username": None,
+                "page_id": page_id,
+                "access_token": page_access_token,
+                "user_access_token": session.user_access_token,
+                "status": SocialAccount.STATUS_CONNECTED,
+                "connected_by": session.user,
+            },
+        )
+        connected_accounts.append(facebook_account)
+
+        try:
+            subscribe_page_to_webhooks(
+                page_id=page_id,
+                page_access_token=page_access_token,
+            )
+            facebook_account.webhook_subscription_status = "subscribed"
+            facebook_account.webhook_subscribed_at = timezone.now()
+            facebook_account.webhook_error = ""
+        except MetaAPIError as exc:
+            facebook_account.webhook_subscription_status = "failed"
+            facebook_account.webhook_error = str(exc)
+            connection_warnings.append(
+                {
+                    "page_id": page_id,
+                    "capability": "messaging_webhooks",
+                    "message": str(exc),
+                    "code": exc.code,
+                }
+            )
+        facebook_account.save(
+            update_fields=[
+                "webhook_subscription_status",
+                "webhook_subscribed_at",
+                "webhook_error",
+            ]
+        )
+
+        instagram_account_data = page.get("instagram_business_account")
+        if not instagram_account_data or not instagram_account_data.get("username"):
+            try:
+                instagram_account_data = get_instagram_account_from_page(
+                    page_id=page_id,
+                    page_access_token=page_access_token,
+                )
+            except MetaAPIError as exc:
+                instagram_account_data = None
+                connection_warnings.append(
+                    {
+                        "page_id": page_id,
+                        "capability": "instagram_discovery",
+                        "message": str(exc),
+                        "code": exc.code,
+                    }
+                )
+
+        if not instagram_account_data:
+            continue
+
+        ig_id = instagram_account_data.get("id")
+        if not ig_id:
+            continue
+        ig_username = instagram_account_data.get("username")
+        ig_name = instagram_account_data.get("name")
+        instagram_account, _ = SocialAccount.objects.update_or_create(
+            agency=session.agency,
+            provider=SocialAccount.PROVIDER_META,
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            external_id=ig_id,
+            defaults={
+                "name": ig_name or ig_username,
+                "username": ig_username,
+                "page_id": page_id,
+                "access_token": page_access_token,
+                "user_access_token": session.user_access_token,
+                "status": SocialAccount.STATUS_CONNECTED,
+                "connected_by": session.user,
+                "webhook_subscription_status": (
+                    facebook_account.webhook_subscription_status
+                ),
+                "webhook_subscribed_at": facebook_account.webhook_subscribed_at,
+                "webhook_error": facebook_account.webhook_error,
+            },
+        )
+        connected_accounts.append(instagram_account)
+
+    return connected_accounts, connection_warnings
 
 
 def build_social_frontend_redirect_url(**result_params):
@@ -57,6 +198,12 @@ def build_social_frontend_redirect_url(**result_params):
 class SocialPostListCreateView(generics.ListCreateAPIView):
     serializer_class = SocialPostSerializer
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "social_upload"
+
+    def get_throttles(self):
+        if self.request.method == "POST":
+            return [ScopedRateThrottle()]
+        return []
 
     def get_queryset(self):
         user = self.request.user
@@ -131,7 +278,7 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
             return Response(
                 {
                     "detail": (
-                        "Published social-media images cannot be replaced. Create a "
+                        "Published social-media files cannot be replaced. Create a "
                         "new post if you need to publish different media."
                     ),
                     "code": "published_media_is_immutable",
@@ -141,6 +288,17 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         next_caption = serializer.validated_data.get("caption", instance.caption)
         if next_caption != instance.caption:
+            if instance.post_format == SocialPost.FORMAT_REEL and published_results.exists():
+                return Response(
+                    {
+                        "detail": (
+                            "Published Reel captions cannot be edited reliably on both "
+                            "Meta platforms. Create a new Reel instead."
+                        ),
+                        "code": "published_reel_caption_edit_unsupported",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             if published_results.filter(
                 platform=SocialAccount.PLATFORM_INSTAGRAM
             ).exists():
@@ -334,7 +492,11 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
                     status=status.HTTP_502_BAD_GATEWAY,
                 )
 
+        video_name = instance.video.name if instance.video else ""
+        video_storage = instance.video.storage if instance.video else None
         self.perform_destroy(instance)
+        if video_name and video_storage:
+            transaction.on_commit(lambda: video_storage.delete(video_name))
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -387,9 +549,7 @@ class MetaConnectionStartView(APIView):
 
     def get(self, request):
         user = request.user
-
-        if not user.agency:
-            raise PermissionDenied("You must belong to an agency.")
+        require_social_connection_manager(user)
 
         oauth_state = SocialOAuthState.create_state(
             provider=SocialAccount.PROVIDER_META,
@@ -416,18 +576,19 @@ class MetaConnectionCallbackView(APIView):
         error = request.query_params.get("error")
 
         if error:
-            return Response(
-                {
-                    "detail": "Meta connection was cancelled or failed.",
-                    "error": error,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code=error,
+                )
             )
 
         if not code or not state:
-            return Response(
-                {"detail": "Missing code or state."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code="missing_code_or_state",
+                )
             )
 
         try:
@@ -439,15 +600,19 @@ class MetaConnectionCallbackView(APIView):
                 state=state,
             )
         except SocialOAuthState.DoesNotExist:
-            return Response(
-                {"detail": "Invalid OAuth state."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code="invalid_state",
+                )
             )
 
         if not oauth_state.is_valid:
-            return Response(
-                {"detail": "OAuth state expired or already used."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code="expired_state",
+                )
             )
 
         try:
@@ -463,136 +628,110 @@ class MetaConnectionCallbackView(APIView):
 
             pages = get_facebook_pages(long_token)
         except MetaAPIError as exc:
-            return Response(
-                {
-                    "detail": "Meta connection failed during token exchange.",
-                    "meta_error": {
-                        "message": str(exc),
-                        "code": exc.code,
-                        "type": exc.error_type,
-                    },
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code=exc.code or "token_exchange_failed",
+                )
             )
         except requests.RequestException:
-            return Response(
-                {"detail": "Meta is temporarily unreachable. Please try again."},
-                status=status.HTTP_502_BAD_GATEWAY,
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code="meta_unreachable",
+                )
             )
 
-        connected_accounts = []
-        connection_warnings = []
-
-        for page in pages:
-            page_id = page.get("id")
-            page_name = page.get("name")
-            page_access_token = page.get("access_token")
-
-            if not page_id or not page_access_token:
-                continue
-
-            facebook_account, _ = SocialAccount.objects.update_or_create(
-                agency=oauth_state.agency,
-                provider=SocialAccount.PROVIDER_META,
-                platform=SocialAccount.PLATFORM_FACEBOOK,
-                external_id=page_id,
-                defaults={
-                    "name": page_name,
-                    "username": None,
-                    "page_id": page_id,
-                    "access_token": page_access_token,
-                    "user_access_token": long_token,
-                    "status": SocialAccount.STATUS_CONNECTED,
-                    "connected_by": oauth_state.user,
-                },
+        if not pages:
+            oauth_state.mark_used()
+            return redirect(
+                build_social_frontend_redirect_url(
+                    meta_connection="error",
+                    error_code="no_pages",
+                )
             )
 
-            connected_accounts.append(facebook_account)
-
-            try:
-                subscribe_page_to_webhooks(
-                    page_id=page_id,
-                    page_access_token=page_access_token,
-                )
-                facebook_account.webhook_subscription_status = "subscribed"
-                facebook_account.webhook_subscribed_at = timezone.now()
-                facebook_account.webhook_error = ""
-                facebook_account.save(
-                    update_fields=[
-                        "webhook_subscription_status",
-                        "webhook_subscribed_at",
-                        "webhook_error",
-                    ]
-                )
-            except MetaAPIError as exc:
-                facebook_account.webhook_subscription_status = "failed"
-                facebook_account.webhook_error = str(exc)
-                facebook_account.save(
-                    update_fields=[
-                        "webhook_subscription_status",
-                        "webhook_error",
-                    ]
-                )
-                connection_warnings.append(
-                    {
-                        "page_id": page_id,
-                        "capability": "messaging_webhooks",
-                        "message": str(exc),
-                        "code": exc.code,
-                    }
-                )
-
-            try:
-                instagram_account_data = get_instagram_account_from_page(
-                    page_id=page_id,
-                    page_access_token=page_access_token,
-                )
-            except MetaAPIError as exc:
-                instagram_account_data = None
-                connection_warnings.append(
-                    {
-                        "page_id": page_id,
-                        "message": str(exc),
-                        "code": exc.code,
-                    }
-                )
-
-            if instagram_account_data:
-                ig_id = instagram_account_data.get("id")
-                ig_username = instagram_account_data.get("username")
-                ig_name = instagram_account_data.get("name")
-
-                instagram_account, _ = SocialAccount.objects.update_or_create(
-                    agency=oauth_state.agency,
-                    provider=SocialAccount.PROVIDER_META,
-                    platform=SocialAccount.PLATFORM_INSTAGRAM,
-                    external_id=ig_id,
-                    defaults={
-                        "name": ig_name or ig_username,
-                        "username": ig_username,
-                        "page_id": page_id,
-                        "access_token": page_access_token,
-                        "user_access_token": long_token,
-                        "status": SocialAccount.STATUS_CONNECTED,
-                        "connected_by": oauth_state.user,
-                        "webhook_subscription_status": (
-                            facebook_account.webhook_subscription_status
-                        ),
-                        "webhook_subscribed_at": facebook_account.webhook_subscribed_at,
-                        "webhook_error": facebook_account.webhook_error,
-                    },
-                )
-
-                connected_accounts.append(instagram_account)
-
+        connection_session = SocialConnectionSession.create_session(
+            agency=oauth_state.agency,
+            user=oauth_state.user,
+            pages=pages,
+            user_access_token=long_token,
+        )
         oauth_state.mark_used()
 
         return redirect(
             build_social_frontend_redirect_url(
-                meta_connection="success",
-                connected_count=len(connected_accounts),
-                warning_count=len(connection_warnings),
+                meta_connection="select",
+                connection_session=connection_session.token,
+                page_count=len(pages),
             )
+        )
+
+
+class MetaConnectionSessionView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "oauth"
+
+    def get_session(self, request, token):
+        require_social_connection_manager(request.user)
+        session = get_object_or_404(
+            SocialConnectionSession.objects.select_related("agency", "user"),
+            token=token,
+            agency=request.user.agency,
+            user=request.user,
+        )
+        if not session.is_valid:
+            return None
+        return session
+
+    @extend_schema(responses=SocialConnectionSessionSerializer)
+    def get(self, request, token):
+        session = self.get_session(request, token)
+        if session is None:
+            return Response(
+                {"detail": "This Page-selection session expired or was completed."},
+                status=status.HTTP_410_GONE,
+            )
+        return Response(SocialConnectionSessionSerializer(session).data)
+
+    @extend_schema(
+        request=MetaPageSelectionSerializer,
+        responses=SocialAccountSerializer(many=True),
+    )
+    def post(self, request, token):
+        session = self.get_session(request, token)
+        if session is None:
+            return Response(
+                {"detail": "This Page-selection session expired or was completed."},
+                status=status.HTTP_410_GONE,
+            )
+        serializer = MetaPageSelectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        page_ids = serializer.validated_data["page_ids"]
+        available_ids = {
+            str(page.get("id"))
+            for page in session.candidate_pages
+            if page.get("id")
+        }
+        unknown = [page_id for page_id in page_ids if page_id not in available_ids]
+        if unknown:
+            return Response(
+                {"page_ids": ["One or more selected Pages are unavailable."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        accounts, warnings = connect_selected_meta_pages(
+            session=session,
+            selected_page_ids=page_ids,
+        )
+        session.complete()
+        return Response(
+            {
+                "accounts": SocialAccountSerializer(accounts, many=True).data,
+                "connected_count": len(accounts),
+                "warning_count": len(warnings),
+                "warnings": warnings,
+            }
         )
 
 
@@ -618,6 +757,7 @@ class SocialAccountDisconnectView(APIView):
 
     def post(self, request, pk):
         user = request.user
+        require_social_connection_manager(user)
 
         queryset = SocialAccount.objects.all()
 

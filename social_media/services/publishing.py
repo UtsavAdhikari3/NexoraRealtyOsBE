@@ -10,13 +10,19 @@ from PIL import Image, UnidentifiedImageError
 
 from social_media.models import SocialAccount, SocialPost, SocialPublishResult
 from .meta import (
+    MetaAPIError,
+    create_facebook_reel_session,
     create_instagram_carousel_container,
     create_instagram_image_container,
+    create_instagram_reel_container,
+    get_instagram_content_publishing_limit,
     get_instagram_container_status,
     publish_facebook_feed_post,
     publish_facebook_multi_photo_post,
     publish_facebook_photo_post,
+    publish_facebook_reel_session,
     publish_instagram_container,
+    upload_facebook_hosted_reel,
     upload_facebook_unpublished_photo,
 )
 
@@ -45,7 +51,7 @@ def get_public_media_url(post, image_file=None):
         or parsed_base_url.hostname in {"localhost", "127.0.0.1"}
     ):
         raise ValueError(
-            "Configure PUBLIC_API_BASE_URL with a public HTTPS URL so Meta can fetch the image."
+            "Configure PUBLIC_API_BASE_URL with a public HTTPS URL so Meta can fetch the media."
         )
 
     return urljoin(f"{base_url.rstrip('/')}/", image_file.url.lstrip("/"))
@@ -85,6 +91,19 @@ def get_public_image_url(post, image_file=None):
     return image_url
 
 
+def get_public_video_url(post):
+    if not post.video:
+        raise ValueError("Reel publishing requires an uploaded video.")
+    video_url = get_public_media_url(post, image_file=post.video)
+    if PurePosixPath(post.video.name).suffix.lower() != ".mp4":
+        raise ValueError("The stored Reel must be an MP4 video.")
+    if post.video.size > settings.SOCIAL_REEL_MAX_SIZE_BYTES:
+        raise ValueError(
+            f"The stored Reel exceeds the {settings.SOCIAL_REEL_MAX_SIZE_MB} MB limit."
+        )
+    return video_url
+
+
 def find_target_account(post, platform):
     selected = post.social_account
     if selected and selected.platform == platform:
@@ -101,6 +120,41 @@ def find_target_account(post, platform):
         queryset = queryset.filter(page_id=selected.page_id)
 
     return queryset.order_by("id").first()
+
+
+def enforce_instagram_publish_quota(account):
+    """Fail before container creation when the rolling publish quota is full."""
+    window_start = timezone.now() - timezone.timedelta(hours=24)
+    configured_limit = settings.INSTAGRAM_PUBLISH_QUOTA_LIMIT
+    local_usage = SocialPublishResult.objects.filter(
+        social_account=account,
+        platform=SocialAccount.PLATFORM_INSTAGRAM,
+        status=SocialPublishResult.STATUS_PUBLISHED,
+        published_at__gte=window_start,
+    ).count()
+    if local_usage >= configured_limit:
+        raise ValueError(
+            "Instagram's 24-hour publishing quota has been reached for this "
+            f"account ({local_usage}/{configured_limit}). Try again later."
+        )
+
+    if not settings.META_REMOTE_QUOTA_CHECK_ENABLED:
+        return
+
+    quota = get_instagram_content_publishing_limit(
+        instagram_account_id=account.external_id,
+        page_access_token=account.access_token,
+    )
+    provider_usage = quota.get("quota_usage")
+    config = quota.get("config") or {}
+    if isinstance(config, list):
+        config = config[0] if config else {}
+    provider_limit = config.get("quota_total") or configured_limit
+    if provider_usage is not None and int(provider_usage) >= int(provider_limit):
+        raise ValueError(
+            "Instagram's provider-reported 24-hour publishing quota has been "
+            f"reached ({provider_usage}/{provider_limit}). Try again later."
+        )
 
 
 def wait_for_instagram_container(container_id, page_access_token):
@@ -132,7 +186,7 @@ def wait_for_instagram_container(container_id, page_access_token):
         raise ValueError(
             "Instagram media processing did not finish before the publishing "
             f"deadline (last status: {last_status or 'unknown'}). Verify that "
-            "the uploaded image URL is publicly reachable over HTTPS."
+            "the uploaded media URL is publicly reachable over HTTPS."
         )
 
 
@@ -203,6 +257,54 @@ def publish_instagram_images(post, account, result=None):
 def publish_instagram_image(post, account, result=None):
     """Backwards-compatible name for the one-or-many image publisher."""
     return publish_instagram_images(post, account, result=result)
+
+
+def publish_instagram_reel(post, account, result=None):
+    video_url = get_public_video_url(post)
+    container_data = create_instagram_reel_container(
+        instagram_account_id=account.external_id,
+        page_access_token=account.access_token,
+        video_url=video_url,
+        caption=post.caption,
+    )
+    container_id = container_data.get("id")
+    if not container_id:
+        raise ValueError("Meta did not return an Instagram Reel container ID.")
+    if result is not None:
+        result.container_id = container_id
+        result.save(update_fields=["container_id", "updated_at"])
+    wait_for_instagram_container(container_id, account.access_token)
+    publish_data = publish_instagram_container(
+        instagram_account_id=account.external_id,
+        page_access_token=account.access_token,
+        container_id=container_id,
+    )
+    external_post_id = publish_data.get("id")
+    if not external_post_id:
+        raise ValueError("Meta did not return an Instagram Reel ID.")
+    return container_id, external_post_id
+
+
+def publish_facebook_reel(post, account):
+    video_url = get_public_video_url(post)
+    page_id = account.page_id or account.external_id
+    session = create_facebook_reel_session(page_id, account.access_token)
+    video_id = session.get("video_id")
+    upload_url = session.get("upload_url")
+    if not video_id or not upload_url:
+        raise ValueError("Meta did not return a Facebook Reel upload session.")
+    upload_facebook_hosted_reel(
+        upload_url=upload_url,
+        page_access_token=account.access_token,
+        video_url=video_url,
+    )
+    publish_facebook_reel_session(
+        page_id=page_id,
+        page_access_token=account.access_token,
+        video_id=video_id,
+        description=post.caption,
+    )
+    return video_id
 
 
 def publish_facebook_images(post, account, images):
@@ -276,26 +378,39 @@ def publish_target(post, account):
 
     try:
         if account.platform == SocialAccount.PLATFORM_FACEBOOK:
-            images = get_post_images(post)
-            if images:
-                data, first_media_id = publish_facebook_images(post, account, images)
-                result.external_media_id = first_media_id
-                result.external_post_id = data.get("post_id") or data.get("id", "")
+            if post.post_format == SocialPost.FORMAT_REEL:
+                video_id = publish_facebook_reel(post, account)
+                result.external_media_id = video_id
+                result.external_post_id = video_id
             else:
-                data = publish_facebook_feed_post(
-                    page_id=account.page_id or account.external_id,
-                    page_access_token=account.access_token,
-                    message=post.caption,
-                )
-                result.external_post_id = data.get("id", "")
-                result.external_media_id = ""
+                images = get_post_images(post)
+                if images:
+                    data, first_media_id = publish_facebook_images(post, account, images)
+                    result.external_media_id = first_media_id
+                    result.external_post_id = data.get("post_id") or data.get("id", "")
+                else:
+                    data = publish_facebook_feed_post(
+                        page_id=account.page_id or account.external_id,
+                        page_access_token=account.access_token,
+                        message=post.caption,
+                    )
+                    result.external_post_id = data.get("id", "")
+                    result.external_media_id = ""
             result.container_id = ""
         elif account.platform == SocialAccount.PLATFORM_INSTAGRAM:
-            result.container_id, result.external_post_id = publish_instagram_images(
-                post,
-                account,
-                result=result,
-            )
+            enforce_instagram_publish_quota(account)
+            if post.post_format == SocialPost.FORMAT_REEL:
+                result.container_id, result.external_post_id = publish_instagram_reel(
+                    post,
+                    account,
+                    result=result,
+                )
+            else:
+                result.container_id, result.external_post_id = publish_instagram_images(
+                    post,
+                    account,
+                    result=result,
+                )
             result.external_media_id = result.external_post_id
         else:
             raise ValueError(f"Publishing to {account.platform} is not supported.")
@@ -313,12 +428,30 @@ def publish_target(post, account):
         if account.platform == SocialAccount.PLATFORM_INSTAGRAM:
             result.error_message = (
                 "Meta timed out while publishing to Instagram. Verify that the uploaded "
-                "image URL is publicly reachable over HTTPS, then retry."
+                "media URL is publicly reachable over HTTPS, then retry."
             )
         else:
             result.error_message = (
                 f"Meta timed out while publishing to {account.platform}. Please retry."
             )
+        result.save(update_fields=["status", "error_message", "updated_at"])
+        return result
+    except MetaAPIError as exc:
+        result.status = SocialPublishResult.STATUS_FAILED
+        if exc.code in {4, 17, 32, 613}:
+            result.error_message = (
+                "Meta temporarily rate-limited this account. Wait before retrying. "
+                f"Provider message: {exc}"
+            )
+        elif exc.code == 190:
+            result.error_message = (
+                "The Meta connection expired or was revoked. Reconnect the account "
+                "before retrying."
+            )
+            account.status = SocialAccount.STATUS_EXPIRED
+            account.save(update_fields=["status", "updated_at"])
+        else:
+            result.error_message = str(exc)
         result.save(update_fields=["status", "error_message", "updated_at"])
         return result
     except Exception as exc:
