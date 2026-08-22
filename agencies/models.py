@@ -1,7 +1,9 @@
 from django.db import models
 from django.utils import timezone
-from django.utils.text import slugify
+from django.core.exceptions import ValidationError
 import uuid
+
+from .subdomains import RESERVED_SUBDOMAINS, generated_agency_subdomain, normalize_subdomain
 
 
 class Agency(models.Model):
@@ -148,7 +150,18 @@ class Agency(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(f"{self.name}-{self.license_number}")[:180]
+            # Public registration validates that the agency name itself produces
+            # a usable subdomain. Keep direct/internal agency creation compatible
+            # with non-Latin names by falling back to the unique licence number.
+            self.slug = generated_agency_subdomain(self.name) or normalize_subdomain(
+                self.license_number
+            )
+        else:
+            self.slug = normalize_subdomain(self.slug)
+        if not self.slug:
+            raise ValidationError({"name": "Agency name must contain letters or numbers for its website subdomain."})
+        if self.slug in RESERVED_SUBDOMAINS:
+            raise ValidationError({"name": f"The {self.slug} subdomain is reserved by Nexora."})
 
         super().save(*args, **kwargs)
 

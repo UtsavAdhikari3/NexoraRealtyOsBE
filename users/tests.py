@@ -91,6 +91,49 @@ class AuthenticationThrottleAPITestCase(APITestCase):
         )
 
 
+class EmailNormalizationAPITestCase(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.agency = Agency.objects.create(
+            name="Email Case Realty",
+            license_number="EMAIL-CASE-001",
+            payment_status=Agency.PAYMENT_PAID,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_user_creation_normalizes_the_entire_email_address(self):
+        user = User.objects.create_user(
+            email="  Case.Sensitive@Example.COM  ",
+            password="Case-Normalization-2026",
+            full_name="Case User",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+        )
+
+        self.assertEqual(user.email, "case.sensitive@example.com")
+
+    def test_login_accepts_any_email_capitalization(self):
+        user = User.objects.create_user(
+            email="mixed.case@example.com",
+            password="Case-Normalization-2026",
+            full_name="Mixed Case User",
+            agency=self.agency,
+            role=User.ROLE_AGENCY_OWNER,
+            is_email_verified=True,
+        )
+
+        response = self.client.post(
+            reverse("login"),
+            {"email": "MIXED.CASE@EXAMPLE.COM", "password": "Case-Normalization-2026"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["user"]["id"], user.id)
+
+
 class AgentOTPEnvironmentPolicyTests(APITestCase):
     def setUp(self):
         cache.clear()
