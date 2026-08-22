@@ -15,6 +15,7 @@ User = get_user_model()
 
 
 class PublicAgencySerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
     address_display = serializers.SerializerMethodField()
     phone_display = serializers.SerializerMethodField()
     logo = serializers.SerializerMethodField()
@@ -121,6 +122,9 @@ class PublicAgencySerializer(serializers.ModelSerializer):
                 media[key] = self._media_url(value)
         config["media"] = media
         return config
+
+    def get_name(self, obj):
+        return self._config(obj).get("display_name", "") or obj.name
 
     def get_logo(self, obj):
         return self._media_url((self._config(obj).get("media") or {}).get("logo"))

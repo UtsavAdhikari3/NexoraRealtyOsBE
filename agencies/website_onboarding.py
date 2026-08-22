@@ -43,6 +43,7 @@ MEDIA_KEYS = {
 
 DEFAULT_WEBSITE_CONFIG = {
     "schema_version": 2,
+    "display_name": "",
     "primary_color": "#496B5A",
     "secondary_color": "#8FAF9B",
     "accent_color": "#C8A96A",
@@ -284,7 +285,7 @@ def validate_website_config(value):
             raise serializers.ValidationError({field: f"Choose one of: {', '.join(sorted(ALLOWED_FONTS))}."})
         cleaned[field] = font
     limits = {
-        "tagline": 120, "about": 3000, "mission": 1500, "vision": 1500, "story": 5000,
+        "display_name": 255, "tagline": 120, "about": 3000, "mission": 1500, "vision": 1500, "story": 5000,
         "year_established": 4, "hero_eyebrow": 80, "hero_title": 120, "hero_subtitle": 320,
         "hero_primary_cta_label": 40, "hero_secondary_cta_label": 40,
         "newsletter_title": 100, "newsletter_description": 320,
@@ -371,27 +372,13 @@ def validate_website_config(value):
 
 
 def materialize_website_config(agency, value=None):
-    """Normalize legacy JSON and snapshot every public agency field into one draft."""
+    """Normalize website JSON without mutating it from organization settings.
+
+    Organization fields are copied into a draft only through the explicit
+    Website Studio action. This keeps private agency settings separate from
+    draft and published storefront snapshots.
+    """
     raw = deepcopy(value or agency.website_draft_config or agency.website_published_config or agency.website_config or {})
-    media = dict(raw.get("media") or {})
-    if agency.logo and not media.get("logo"):
-        media["logo"] = agency.logo.name
-    if agency.cover_image and not media.get("hero_image"):
-        media["hero_image"] = agency.cover_image.name
-    raw["media"] = media
-    mappings = {
-        "primary_color": agency.primary_color or "#496B5A", "about": agency.about,
-        "public_email": agency.email or "", "public_phone": agency.phone or "",
-        "address": agency.address, "business_hours": agency.business_hours,
-        "facebook_url": agency.facebook_url or "", "instagram_url": agency.instagram_url or "",
-        "linkedin_url": agency.linkedin_url or "", "youtube_url": agency.youtube_url or "",
-        "tiktok_url": agency.tiktok_url or "", "whatsapp_number": agency.whatsapp_number or "",
-        "viber_number": agency.viber_number or "", "seo_title": agency.seo_title,
-        "seo_description": agency.seo_description, "language": agency.default_language,
-    }
-    for key, fallback in mappings.items():
-        if not raw.get(key) and fallback:
-            raw[key] = fallback
     return validate_website_config(raw)
 
 

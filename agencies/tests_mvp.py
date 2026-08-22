@@ -4,6 +4,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from agencies.models import Agency, AgencyDomain
+from agencies.website_onboarding import default_website_config
 from leads.models import Lead
 from users.models import AgencyUser
 
@@ -35,6 +36,18 @@ class AgencyMVPAPITestCase(APITestCase):
         cache.clear()
 
     def test_owner_can_update_profile_but_not_payment(self):
+        original_draft = default_website_config()
+        original_draft["hero_title"] = "Existing website draft"
+        original_published = default_website_config()
+        original_published["hero_title"] = "Existing live website"
+        self.agency.website_draft_config = original_draft
+        self.agency.website_published_config = original_published
+        self.agency.website_config = original_published
+        self.agency.website_draft_revision = 4
+        self.agency.save(update_fields=[
+            "website_draft_config", "website_published_config", "website_config",
+            "website_draft_revision",
+        ])
         self.client.force_authenticate(user=self.owner)
         response = self.client.patch(
             reverse("current-agency"),
@@ -51,7 +64,10 @@ class AgencyMVPAPITestCase(APITestCase):
         self.agency.refresh_from_db()
         self.assertEqual(self.agency.about, "Trusted local agency")
         self.assertEqual(self.agency.payment_status, Agency.PAYMENT_PAID)
-        self.assertEqual(self.agency.website_config["hero_title"], "Find a remarkable home")
+        self.assertEqual(self.agency.website_draft_config, original_draft)
+        self.assertEqual(self.agency.website_published_config, original_published)
+        self.assertEqual(self.agency.website_config, original_published)
+        self.assertEqual(self.agency.website_draft_revision, 4)
 
     def test_public_agency_can_resolve_custom_domain(self):
         AgencyDomain.objects.create(

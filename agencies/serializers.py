@@ -70,6 +70,7 @@ class AgencySerializer(serializers.ModelSerializer):
     resolved_message_templates = serializers.SerializerMethodField()
     address_display = serializers.SerializerMethodField()
     phone_display = serializers.SerializerMethodField()
+    website_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Agency
@@ -116,6 +117,7 @@ class AgencySerializer(serializers.ModelSerializer):
             "resolved_message_templates",
             "address_display",
             "phone_display",
+            "website_url",
             "is_website_published",
             "facebook_url",
             "instagram_url",
@@ -142,6 +144,7 @@ class AgencySerializer(serializers.ModelSerializer):
             "resolved_message_templates",
             "address_display",
             "phone_display",
+            "website_url",
             "is_website_published",
             "website_onboarding_status",
             "website_onboarding_step",
@@ -155,7 +158,12 @@ class AgencySerializer(serializers.ModelSerializer):
             "website_draft_updated_at",
             "website_draft_updated_by",
             "custom_domain",
+            "website_template",
+            "website_config",
         ]
+
+    def get_website_url(self, obj):
+        return agency_website_url(obj)
 
     def get_resolved_message_templates(self, obj) -> dict:
         return resolved_message_templates(obj.message_templates)
@@ -218,6 +226,7 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
             "linkedin_url",
             "whatsapp_number",
             "viber_number",
+            "default_language",
             "website_template",
             "website_draft_config",
             "website_published_config",
@@ -241,8 +250,32 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "name",
             "slug",
             "license_number",
+            "logo",
+            "cover_image",
+            "about",
+            "email",
+            "phone",
+            "address",
+            "province",
+            "district",
+            "municipality",
+            "ward_number",
+            "tole",
+            "business_hours",
+            "primary_color",
+            "seo_title",
+            "seo_description",
+            "facebook_url",
+            "instagram_url",
+            "tiktok_url",
+            "youtube_url",
+            "linkedin_url",
+            "whatsapp_number",
+            "viber_number",
+            "default_language",
             "website_template",
             "website_onboarding_status",
             "website_onboarding_completed_at",
