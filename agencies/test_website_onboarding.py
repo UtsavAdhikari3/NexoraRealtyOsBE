@@ -43,6 +43,24 @@ class WebsiteOnboardingAPITestCase(APITestCase):
             role=AgencyUser.ROLE_AGENT,
         )
 
+    def ready_website_config(self, **updates):
+        config = default_website_config()
+        config.update({
+            "display_name": "Onboarding Realty Website",
+            "public_email": "hello@onboarding.test",
+            "public_phone": "+977 9800000000",
+            "about": "A trusted real estate agency serving buyers and property owners across Kathmandu.",
+            "address": "Kathmandu, Nepal",
+            "primary_color": "#496B5A",
+            "seo_title": "Onboarding Realty Nepal",
+            "seo_description": "Discover verified properties and dependable real estate guidance from our experienced Kathmandu agency team.",
+            "accuracy_confirmed": True,
+        })
+        config["media"]["logo"] = "agency_branding/logos/logo.png"
+        config["media"]["hero_image"] = "agency_branding/covers/cover.jpg"
+        config.update(updates)
+        return config
+
     def complete_required_profile(self):
         self.agency.email = "hello@onboarding.test"
         self.agency.phone = "+977 9800000000"
@@ -53,6 +71,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.agency.cover_image = "agency_branding/covers/cover.jpg"
         self.agency.seo_title = "Onboarding Realty Nepal"
         self.agency.seo_description = "Discover verified properties and dependable real estate guidance from our experienced Kathmandu agency team."
+        self.agency.website_draft_config = self.ready_website_config()
         self.agency.save()
 
     def test_owner_can_save_a_valid_draft(self):
@@ -159,6 +178,36 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         )
         self.agency.refresh_from_db()
         self.assertEqual(self.agency.website_draft_config["hero_title"], "Newest replacement headline")
+        self.assertEqual(self.agency.about, original["about"])
+
+    def test_website_draft_changes_do_not_mutate_organization_settings(self):
+        self.client.force_authenticate(self.owner)
+        self.agency.about = "Canonical organization profile"
+        self.agency.email = "office@organization.test"
+        self.agency.save(update_fields=["about", "email"])
+        config = default_website_config()
+        config.update({
+            "display_name": "Public storefront name",
+            "about": "Public website copy that is deliberately different from the organization profile.",
+            "public_email": "website@example.test",
+        })
+
+        response = self.client.patch(
+            reverse("website-onboarding"),
+            {
+                "about": "This top-level value must be ignored",
+                "email": "ignored@example.test",
+                "website_draft_config": config,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.about, "Canonical organization profile")
+        self.assertEqual(self.agency.email, "office@organization.test")
+        self.assertEqual(self.agency.website_draft_config["display_name"], "Public storefront name")
+        self.assertEqual(self.agency.website_draft_config["public_email"], "website@example.test")
 
     def test_stale_autosave_returns_conflict_without_overwriting(self):
         self.client.force_authenticate(self.owner)
@@ -210,7 +259,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
 
     def test_publish_rejects_page_the_selected_template_cannot_render(self):
         self.complete_required_profile()
-        config = default_website_config()
+        config = self.ready_website_config()
         config["hero_title"] = "A better way to find property in Nepal"
         config["accuracy_confirmed"] = True
         config["enabled_pages"]["services"] = True
@@ -251,7 +300,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
 
     def test_publish_copies_draft_and_makes_site_public(self):
         self.complete_required_profile()
-        config = default_website_config()
+        config = self.ready_website_config()
         config["hero_title"] = "A better way to find property in Nepal"
         config["services"] = [
             {"title": "Buying", "description": "Guidance for property buyers."},
@@ -278,19 +327,21 @@ class WebsiteOnboardingAPITestCase(APITestCase):
             reverse("public-agency-detail-by-slug", kwargs={"slug": self.agency.slug})
         )
         self.assertEqual(public.status_code, status.HTTP_200_OK)
+        self.assertEqual(public.data["name"], "Onboarding Realty Website")
+        self.assertEqual(self.agency.name, "Onboarding Realty")
         self.assertEqual(public.data["website_config"]["hero_title"], config["hero_title"])
         self.assertEqual(public.data["website_config"]["services"], config["services"])
 
     def test_publish_history_and_restore_create_immutable_new_versions(self):
         self.complete_required_profile()
-        first_config = default_website_config()
+        first_config = self.ready_website_config()
         first_config.update({"hero_title": "Version one", "accuracy_confirmed": True})
         self.agency.website_draft_config = first_config
         self.agency.save(update_fields=["website_draft_config"])
         self.client.force_authenticate(self.owner)
         self.assertEqual(self.client.post(reverse("website-publish")).status_code, status.HTTP_200_OK)
 
-        second_config = default_website_config()
+        second_config = self.ready_website_config()
         second_config.update({"hero_title": "Version two", "accuracy_confirmed": True})
         self.agency.website_draft_config = second_config
         self.agency.save(update_fields=["website_draft_config"])

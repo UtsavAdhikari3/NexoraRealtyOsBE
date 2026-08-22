@@ -166,7 +166,6 @@ class CurrentAgencyView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         locked_agency = Agency.objects.select_for_update().get(pk=request.user.agency_id)
-        was_completed = locked_agency.website_onboarding_status == Agency.WEBSITE_ONBOARDING_COMPLETED
         serializer = self.serializer_class(
             locked_agency,
             data=request.data,
@@ -175,34 +174,6 @@ class CurrentAgencyView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
-        incoming = deepcopy(serializer.validated_data.get("website_config") or instance.website_draft_config or {})
-        field_map = {
-            "about": "about", "email": "public_email", "phone": "public_phone", "address": "address",
-            "business_hours": "business_hours", "primary_color": "primary_color", "seo_title": "seo_title",
-            "seo_description": "seo_description", "facebook_url": "facebook_url", "instagram_url": "instagram_url",
-            "linkedin_url": "linkedin_url", "youtube_url": "youtube_url", "tiktok_url": "tiktok_url",
-            "whatsapp_number": "whatsapp_number", "viber_number": "viber_number", "default_language": "language",
-        }
-        for agency_field, config_field in field_map.items():
-            if agency_field in serializer.validated_data:
-                incoming[config_field] = serializer.validated_data[agency_field] or ""
-        media = dict(incoming.get("media") or {})
-        if "logo" in serializer.validated_data and instance.logo:
-            media["logo"] = instance.logo.name
-        if "cover_image" in serializer.validated_data and instance.cover_image:
-            media["hero_image"] = instance.cover_image.name
-        incoming["media"] = media
-        instance.website_draft_config = materialize_website_config(instance, incoming)
-        readiness = website_readiness(instance, instance.website_draft_config)
-        instance.website_completion_percentage = readiness["completion_percentage"]
-        instance.website_onboarding_status = Agency.WEBSITE_ONBOARDING_COMPLETED if was_completed else (
-            Agency.WEBSITE_ONBOARDING_READY if readiness["is_ready_to_publish"] else Agency.WEBSITE_ONBOARDING_IN_PROGRESS
-        )
-        revision_fields = advance_website_draft_revision(instance, request.user)
-        instance.save(update_fields=[
-            "website_draft_config", "website_completion_percentage", "website_onboarding_status",
-            *revision_fields,
-        ])
         return Response(self.serializer_class(instance, context={"request": request}).data)
 
 
