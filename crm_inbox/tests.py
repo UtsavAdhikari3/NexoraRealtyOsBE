@@ -19,6 +19,7 @@ from .models import Conversation, SocialContact, SocialMessage, WebhookEvent
 @override_settings(
     META_APP_SECRET="webhook-test-secret",
     META_WEBHOOK_VERIFY_TOKEN="verify-me",
+    SOCIAL_PROFILE_LOOKUP_ENABLED=False,
 )
 class UnifiedInboxAPITestCase(APITestCase):
     def setUp(self):
@@ -137,6 +138,30 @@ class UnifiedInboxAPITestCase(APITestCase):
         self.assertEqual(conversation.platform, "facebook")
         self.assertEqual(conversation.unread_count, 1)
 
+    @override_settings(SOCIAL_PROFILE_LOOKUP_ENABLED=True)
+    @patch(
+        "crm_inbox.services.get_meta_messaging_profile",
+        return_value={
+            "first_name": "Aarav",
+            "last_name": "Sharma",
+            "profile_pic": "https://example.com/aarav.jpg",
+        },
+    )
+    def test_facebook_sender_profile_enriches_contact_and_automatic_lead(self, profile_mock):
+        response = self.signed_webhook(self.facebook_payload())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        contact = SocialContact.objects.get()
+        self.assertEqual(contact.display_name, "Aarav Sharma")
+        self.assertEqual(contact.profile_image_url, "https://example.com/aarav.jpg")
+        self.assertIsNotNone(contact.profile_synced_at)
+        self.assertEqual(contact.linked_lead.full_name, "Aarav Sharma")
+        profile_mock.assert_called_once_with(self.facebook, "fb-user-1")
+
+        self.client.force_authenticate(user=self.owner)
+        inbox = self.client.get(reverse("inbox-conversation-list"))
+        self.assertEqual(inbox.data[0]["contact"]["display_label"], "Aarav Sharma")
+        self.assertTrue(inbox.data[0]["contact"]["profile_available"])
+
     def test_inbound_referral_creates_one_attributed_lead(self):
         post = SocialPost.objects.create(
             agency=self.agency,
@@ -191,6 +216,40 @@ class UnifiedInboxAPITestCase(APITestCase):
         conversation = Conversation.objects.get()
         self.assertEqual(conversation.platform, "instagram")
         self.assertEqual(conversation.messages.get().text, "Price please")
+
+    @override_settings(SOCIAL_PROFILE_LOOKUP_ENABLED=True)
+    @patch(
+        "crm_inbox.services.get_meta_messaging_profile",
+        return_value={
+            "name": "Maya Rai",
+            "username": "maya.homes",
+            "profile_pic": "https://example.com/maya.jpg",
+            "follower_count": 2450,
+            "is_verified_user": True,
+            "private_field": "must-not-be-stored",
+        },
+    )
+    def test_instagram_profile_stores_only_safe_public_details(self, profile_mock):
+        payload = {
+            "object": "instagram",
+            "entry": [{
+                "id": "ig-1",
+                "messaging": [{
+                    "sender": {"id": "ig-user-profile"},
+                    "recipient": {"id": "ig-1"},
+                    "timestamp": 1783900001000,
+                    "message": {"mid": "ig-profile-mid", "text": "Hello"},
+                }],
+            }],
+        }
+        self.signed_webhook(payload)
+        contact = SocialContact.objects.get()
+        self.assertEqual(contact.display_name, "Maya Rai")
+        self.assertEqual(contact.username, "maya.homes")
+        self.assertEqual(
+            contact.profile_data,
+            {"follower_count": 2450, "is_verified_user": True},
+        )
 
     def test_conversations_are_tenant_scoped(self):
         self.signed_webhook(self.facebook_payload())

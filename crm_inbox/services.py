@@ -3,6 +3,7 @@ import hmac
 import json
 from datetime import datetime, timezone as datetime_timezone
 
+import requests
 from django.conf import settings
 from django.db import models, transaction
 from django.db.models import F
@@ -11,6 +12,7 @@ from django.utils import timezone
 from leads.automation import apply_lead_automation
 from leads.models import Lead, LeadInteraction, LeadStatusHistory
 from social_media.models import SocialAccount, SocialPublishResult
+from social_media.services.meta import MetaAPIError, get_meta_messaging_profile
 
 from .models import Conversation, SocialContact, SocialMessage, WebhookEvent
 
@@ -104,6 +106,92 @@ def find_referral_post(account, referral):
         | models.Q(external_media_id__in=identifiers)
     ).first()
     return result.post if result else None
+
+
+def contact_profile_is_stale(contact):
+    if not contact.profile_synced_at:
+        return True
+    refresh_before = timezone.now() - timezone.timedelta(
+        hours=settings.SOCIAL_PROFILE_REFRESH_HOURS
+    )
+    return contact.profile_synced_at <= refresh_before
+
+
+def refresh_social_contact_profile(contact, force=False):
+    """Enrich a social contact without ever blocking message ingestion on failure."""
+    if not settings.SOCIAL_PROFILE_LOOKUP_ENABLED:
+        return contact
+    if not force and not contact_profile_is_stale(contact):
+        return contact
+
+    synced_at = timezone.now()
+    try:
+        profile = get_meta_messaging_profile(
+            contact.social_account,
+            contact.external_user_id,
+        )
+    except (MetaAPIError, requests.RequestException) as exc:
+        contact.profile_synced_at = synced_at
+        contact.profile_lookup_error = str(exc)[:1000]
+        if contact.display_name == contact.external_user_id:
+            contact.display_name = ""
+        contact.save(
+            update_fields=[
+                "display_name",
+                "profile_synced_at",
+                "profile_lookup_error",
+                "last_seen_at",
+            ]
+        )
+        return contact
+
+    first_name = str(profile.get("first_name") or "").strip()
+    last_name = str(profile.get("last_name") or "").strip()
+    display_name = str(profile.get("name") or "").strip()
+    if not display_name:
+        display_name = " ".join(value for value in (first_name, last_name) if value)
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    profile_image_url = str(
+        profile.get("profile_pic") or profile.get("profile_picture_url") or ""
+    ).strip()
+    safe_profile_data = {
+        key: profile[key]
+        for key in (
+            "follower_count",
+            "is_user_follow_business",
+            "is_business_follow_user",
+            "is_verified_user",
+        )
+        if key in profile and profile[key] is not None
+    }
+    contact.display_name = display_name
+    contact.username = username
+    contact.profile_image_url = profile_image_url
+    contact.profile_data = safe_profile_data
+    contact.profile_synced_at = synced_at
+    contact.profile_lookup_error = ""
+    contact.save(
+        update_fields=[
+            "display_name",
+            "username",
+            "profile_image_url",
+            "profile_data",
+            "profile_synced_at",
+            "profile_lookup_error",
+            "last_seen_at",
+        ]
+    )
+
+    if contact.linked_lead_id and (display_name or username):
+        lead = contact.linked_lead
+        generated_names = {
+            contact.external_user_id,
+            f"{contact.platform.title()} contact {contact.external_user_id[-6:]}",
+        }
+        if not lead.full_name or lead.full_name in generated_names:
+            lead.full_name = display_name or f"@{username}"
+            lead.save(update_fields=["full_name", "updated_at"])
+    return contact
 
 
 def ensure_automatic_social_lead(conversation, contact, referral=None):
@@ -212,7 +300,7 @@ def ingest_messaging_event(account, event):
         social_account=account,
         platform=account.platform,
         external_user_id=contact_external_id,
-        defaults={"display_name": contact_external_id},
+        defaults={"display_name": ""},
     )
     conversation, _ = Conversation.objects.get_or_create(
         agency=account.agency,
@@ -273,7 +361,7 @@ def ingest_messaging_event(account, event):
         },
     )
     if not created:
-        return
+        return contact
 
     preview = text or (
         f"[{attachments[0].get('type', 'attachment').title()}]"
@@ -288,7 +376,8 @@ def ingest_messaging_event(account, event):
     if direction == SocialMessage.DIRECTION_INBOUND:
         conversation.last_message_at = sent_at
         if settings.SOCIAL_AUTO_CREATE_LEADS:
-            ensure_automatic_social_lead(conversation, contact, referral)
+            lead = ensure_automatic_social_lead(conversation, contact, referral)
+            contact.linked_lead = lead
         Conversation.objects.filter(id=conversation.id).update(
             unread_count=F("unread_count") + 1,
             **update_values,
@@ -306,6 +395,7 @@ def ingest_messaging_event(account, event):
             lead.save(update_fields=["last_contacted_at", "updated_at"])
     else:
         Conversation.objects.filter(id=conversation.id).update(**update_values)
+    return contact
 
 
 def process_meta_payload(payload):
@@ -315,7 +405,9 @@ def process_meta_payload(payload):
         if not account:
             continue
         for messaging_event in entry.get("messaging", []):
-            ingest_messaging_event(account, messaging_event)
+            contact = ingest_messaging_event(account, messaging_event)
+            if contact:
+                refresh_social_contact_profile(contact)
 
 
 def process_webhook_event(event):
