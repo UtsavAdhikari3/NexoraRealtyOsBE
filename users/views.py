@@ -184,7 +184,7 @@ class LoginView(APIView):
     authentication_classes = []
 
     def post(self, request):
-        email = request.data.get("email")
+        email = User.objects.normalize_email(request.data.get("email"))
         password = request.data.get("password")
 
         user = authenticate(
@@ -306,7 +306,7 @@ class VerifyLoginOTPView(APIView):
         otp = serializer.validated_data["otp"]
 
         user = User.objects.filter(
-            email=email
+            email__iexact=email
         ).select_related(
             "agency"
         ).first()
@@ -519,7 +519,7 @@ class PasswordResetRequestView(APIView):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = User.objects.filter(
-            email=serializer.validated_data["email"],
+            email__iexact=serializer.validated_data["email"],
             is_active=True,
         ).first()
 

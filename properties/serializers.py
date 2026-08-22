@@ -556,3 +556,11 @@ class PropertySerializer(serializers.ModelSerializer):
             )
 
         return attrs
+
+    def update(self, instance, validated_data):
+        """Set publication time only when a listing actually becomes public."""
+        was_published = instance.is_published
+        will_be_published = validated_data.get("is_published", instance.is_published)
+        if will_be_published and not was_published:
+            validated_data["published_at"] = timezone.now()
+        return super().update(instance, validated_data)

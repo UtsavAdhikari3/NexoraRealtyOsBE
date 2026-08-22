@@ -7,6 +7,7 @@ from django.core import signing
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
+from django.test import override_settings
 from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -252,6 +253,11 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.complete_required_profile()
         config = default_website_config()
         config["hero_title"] = "A better way to find property in Nepal"
+        config["services"] = [
+            {"title": "Buying", "description": "Guidance for property buyers."},
+            {"title": "Selling", "description": "Marketing support for owners."},
+            {"title": "Valuation", "description": "Evidence-based property valuations."},
+        ]
         config["accuracy_confirmed"] = True
         self.agency.website_draft_config = config
         self.agency.save(update_fields=["website_draft_config"])
@@ -273,6 +279,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         )
         self.assertEqual(public.status_code, status.HTTP_200_OK)
         self.assertEqual(public.data["website_config"]["hero_title"], config["hero_title"])
+        self.assertEqual(public.data["website_config"]["services"], config["services"])
 
     def test_publish_history_and_restore_create_immutable_new_versions(self):
         self.complete_required_profile()
@@ -511,6 +518,7 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertEqual(expired.status_code, status.HTTP_400_BAD_REQUEST)
 
 class WebsiteRegistrationDefaultsAPITestCase(APITestCase):
+    @override_settings(STOREFRONT_PUBLIC_URL="https://{slug}.nexorarealtyos.com")
     def test_registration_creates_an_unpublished_website_draft(self):
         response = self.client.post(
             reverse("register"),
@@ -528,4 +536,45 @@ class WebsiteRegistrationDefaultsAPITestCase(APITestCase):
         self.assertFalse(agency.is_website_published)
         self.assertEqual(agency.website_onboarding_status, Agency.WEBSITE_ONBOARDING_NOT_STARTED)
         self.assertEqual(agency.website_draft_config["schema_version"], 2)
+        self.assertEqual(agency.slug, "new-website-realty")
+        self.assertEqual(response.data["agency"]["slug"], "new-website-realty")
+        self.assertEqual(
+            response.data["agency"]["website_url"],
+            "https://new-website-realty.nexorarealtyos.com",
+        )
         self.assertEqual(response.data["next_step"], "payment")
+
+    def test_registration_rejects_an_unavailable_generated_subdomain(self):
+        Agency.objects.create(name="Test", license_number="TAKEN-SUBDOMAIN-001")
+
+        response = self.client.post(
+            reverse("register"),
+            {
+                "full_name": "Second Test Owner",
+                "email": "second-test@example.com",
+                "password": "Second-Test-Password-2026",
+                "agency_name": "Test",
+                "license_number": "TAKEN-SUBDOMAIN-002",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("agency_name", response.data)
+        self.assertIn("test.nexorarealtyos.com is unavailable", response.data["agency_name"][0])
+
+    def test_registration_rejects_a_reserved_platform_subdomain(self):
+        response = self.client.post(
+            reverse("register"),
+            {
+                "full_name": "API Owner",
+                "email": "api-owner@example.com",
+                "password": "Reserved-Subdomain-Password-2026",
+                "agency_name": "API",
+                "license_number": "RESERVED-SUBDOMAIN-001",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("reserved", response.data["agency_name"][0].lower())

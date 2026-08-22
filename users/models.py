@@ -4,6 +4,7 @@ from django.contrib.auth.models import (
     BaseUserManager
 )
 from django.db import models
+from django.db.models.functions import Lower
 
 from agencies.models import Agency
 from django.conf import settings
@@ -11,6 +12,14 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.utils import timezone
 
 class AgencyUserManager(BaseUserManager):
+    @classmethod
+    def normalize_email(cls, email):
+        """Email addresses are account identifiers, so normalize the full value."""
+        return super().normalize_email(email).strip().lower() if email else email
+
+    def get_by_natural_key(self, username):
+        return self.get(email__iexact=self.normalize_email(username))
+
     def create_user(self, email, password=None, **extra_fields):
         if not email:
             raise ValueError("Email is required")
@@ -122,6 +131,15 @@ class AgencyUser(AbstractBaseUser, PermissionsMixin):
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["full_name"]
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(Lower("email"), name="users_agencyuser_email_ci_unique"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.email = type(self).objects.normalize_email(self.email)
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return self.email

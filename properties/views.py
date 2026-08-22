@@ -448,7 +448,19 @@ class PropertyMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
                 "You do not have permission to delete this media."
             )
 
-        return super().destroy(request, *args, **kwargs)
+        property_id = media.property_id
+        was_primary = media.is_primary
+        with transaction.atomic():
+            response = super().destroy(request, *args, **kwargs)
+            if was_primary:
+                replacement = PropertyMedia.objects.filter(
+                    property_id=property_id,
+                    media_type="image",
+                ).order_by("sort_order", "id").first()
+                if replacement:
+                    replacement.is_primary = True
+                    replacement.save(update_fields=["is_primary"])
+        return response
 
 
 class PropertyVerificationDetailView(generics.RetrieveUpdateAPIView):

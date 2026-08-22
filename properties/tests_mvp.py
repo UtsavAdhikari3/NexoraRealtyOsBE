@@ -157,3 +157,70 @@ class PublicPropertyMVPAPITestCase(APITestCase):
         draft.refresh_from_db()
         self.assertTrue(draft.is_published)
         self.assertIsNotNone(draft.published_at)
+
+    def test_existing_draft_can_be_published_and_unpublished_across_public_api(self):
+        draft = Property.objects.create(
+            agency=self.agency,
+            title="Previously Saved Draft",
+            property_type="house",
+            purpose="sale",
+            price="12000000",
+            province="Bagmati",
+            district="Kathmandu",
+            city="Kathmandu",
+            status="draft",
+            is_published=False,
+        )
+        manage_url = reverse("property-detail", kwargs={"pk": draft.pk})
+        public_list_url = reverse(
+            "public-property-list",
+            kwargs={"license_number": self.agency.license_number},
+        )
+        public_detail_url = reverse(
+            "public-property-share-detail",
+            kwargs={"slug": self.agency.slug, "share_slug": draft.share_slug},
+        )
+
+        def public_ids():
+            response = self.client.get(public_list_url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            return {item["id"] for item in response.data["results"]}
+
+        self.assertNotIn(draft.pk, public_ids())
+        self.assertEqual(self.client.get(public_detail_url).status_code, status.HTTP_404_NOT_FOUND)
+
+        self.client.force_authenticate(user=self.owner)
+        published = self.client.patch(
+            manage_url,
+            {"status": "available", "is_published": True},
+            format="json",
+        )
+        self.assertEqual(published.status_code, status.HTTP_200_OK)
+        draft.refresh_from_db()
+        first_published_at = draft.published_at
+        self.assertTrue(draft.is_published)
+        self.assertIsNotNone(draft.availability_verified_at)
+        self.assertIsNotNone(draft.listing_expires_at)
+
+        self.client.force_authenticate(user=None)
+        self.assertIn(draft.pk, public_ids())
+        self.assertEqual(self.client.get(public_detail_url).status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=self.owner)
+        edited = self.client.patch(manage_url, {"title": "Edited While Published"}, format="json")
+        self.assertEqual(edited.status_code, status.HTTP_200_OK)
+        draft.refresh_from_db()
+        self.assertEqual(draft.published_at, first_published_at)
+
+        unpublished = self.client.patch(
+            manage_url,
+            {"status": "draft", "is_published": False},
+            format="json",
+        )
+        self.assertEqual(unpublished.status_code, status.HTTP_200_OK)
+        draft.refresh_from_db()
+        self.assertFalse(draft.is_published)
+
+        self.client.force_authenticate(user=None)
+        self.assertNotIn(draft.pk, public_ids())
+        self.assertEqual(self.client.get(public_detail_url).status_code, status.HTTP_404_NOT_FOUND)

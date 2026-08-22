@@ -1,10 +1,15 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from agencies.models import Agency
 from agencies.website_onboarding import default_website_config
+from agencies.subdomains import (
+    RESERVED_SUBDOMAINS,
+    generated_agency_subdomain,
+    subdomain_unavailable_message,
+)
 from .models import AgencyUser
 
 User = get_user_model()
@@ -62,7 +67,7 @@ class RegisterSerializer(serializers.Serializer):
     def validate_email(self, value):
         value = value.lower().strip()
 
-        if User.objects.filter(email=value).exists():
+        if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError(
                 "User with this email already exists."
             )
@@ -81,28 +86,47 @@ class RegisterSerializer(serializers.Serializer):
 
         return value
 
+    def validate_agency_name(self, value):
+        value = value.strip()
+        subdomain = generated_agency_subdomain(value)
+        if not subdomain:
+            raise serializers.ValidationError(
+                "Agency name must contain letters or numbers for its website subdomain."
+            )
+        if subdomain in RESERVED_SUBDOMAINS:
+            raise serializers.ValidationError(f"The {subdomain} subdomain is reserved by Nexora.")
+        if Agency.objects.filter(slug__iexact=subdomain).exists():
+            raise serializers.ValidationError(subdomain_unavailable_message(subdomain))
+        return value
+
     def validate_password(self, value):
         validate_password(value)
         return value
 
-    @transaction.atomic
     def create(self, validated_data):
-        agency = Agency.objects.create(
-            name=validated_data["agency_name"],
-            license_number=validated_data["license_number"],
-            is_website_published=False,
-            website_draft_config=default_website_config(),
-        )
+        subdomain = generated_agency_subdomain(validated_data["agency_name"])
+        try:
+            with transaction.atomic():
+                agency = Agency.objects.create(
+                    name=validated_data["agency_name"],
+                    license_number=validated_data["license_number"],
+                    is_website_published=False,
+                    website_draft_config=default_website_config(),
+                )
 
-        user = User.objects.create_user(
-            email=validated_data["email"],
-            password=validated_data["password"],
-            full_name=validated_data["full_name"],
-            agency=agency,
-            role="agency_owner",
-        )
-
-        return user
+                return User.objects.create_user(
+                    email=validated_data["email"],
+                    password=validated_data["password"],
+                    full_name=validated_data["full_name"],
+                    agency=agency,
+                    role="agency_owner",
+                )
+        except IntegrityError:
+            if Agency.objects.filter(slug__iexact=subdomain).exists():
+                raise serializers.ValidationError(
+                    {"agency_name": subdomain_unavailable_message(subdomain)}
+                )
+            raise
     
 
 
@@ -149,6 +173,15 @@ class AgentSerializer(serializers.ModelSerializer):
 
     def validate_password(self, value):
         validate_password(value, user=self.instance)
+        return value
+
+    def validate_email(self, value):
+        value = User.objects.normalize_email(value)
+        existing = User.objects.filter(email__iexact=value)
+        if self.instance:
+            existing = existing.exclude(pk=self.instance.pk)
+        if existing.exists():
+            raise serializers.ValidationError("User with this email already exists.")
         return value
 
     def update(self, instance, validated_data):
@@ -243,7 +276,7 @@ class AgentCreateSerializer(serializers.Serializer):
     def validate_email(self, value):
         value = value.lower().strip()
 
-        if User.objects.filter(email=value).exists():
+        if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError(
                 "User with this email already exists."
             )

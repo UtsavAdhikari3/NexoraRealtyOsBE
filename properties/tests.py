@@ -207,6 +207,33 @@ class PropertyMediaAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(PropertyMedia.objects.count(), 0)
 
+    def test_deleting_primary_image_promotes_the_next_saved_image(self):
+        primary = PropertyMedia.objects.create(
+            agency=self.agency,
+            property=self.property,
+            media_type="image",
+            file="property_media/primary.jpg",
+            title="Primary",
+            sort_order=0,
+            is_primary=True,
+        )
+        replacement = PropertyMedia.objects.create(
+            agency=self.agency,
+            property=self.property,
+            media_type="image",
+            file="property_media/replacement.jpg",
+            title="Replacement",
+            sort_order=1,
+        )
+
+        response = self.client.delete(
+            reverse("property-media-detail", kwargs={"pk": primary.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        replacement.refresh_from_db()
+        self.assertTrue(replacement.is_primary)
+
     def test_delete_removes_generated_files(self):
         create_response = self.client.post(
             reverse("property-media-list", kwargs={"property_id": self.property.id}),
