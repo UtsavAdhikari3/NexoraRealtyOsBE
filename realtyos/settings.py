@@ -43,6 +43,24 @@ def env_list(name, default=None):
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "15"))
+SOCIAL_REEL_MAX_SOURCE_SIZE_MB = int(
+    os.getenv("SOCIAL_REEL_MAX_SOURCE_SIZE_MB", "250")
+)
+SOCIAL_REEL_MAX_SOURCE_SIZE_BYTES = SOCIAL_REEL_MAX_SOURCE_SIZE_MB * 1024 * 1024
+SOCIAL_REEL_MAX_SIZE_MB = int(os.getenv("SOCIAL_REEL_MAX_SIZE_MB", "15"))
+SOCIAL_REEL_MAX_SIZE_BYTES = SOCIAL_REEL_MAX_SIZE_MB * 1_000_000
+SOCIAL_REEL_MIN_DURATION_SECONDS = int(
+    os.getenv("SOCIAL_REEL_MIN_DURATION_SECONDS", "4")
+)
+SOCIAL_REEL_MAX_DURATION_SECONDS = int(
+    os.getenv("SOCIAL_REEL_MAX_DURATION_SECONDS", "60")
+)
+SOCIAL_REEL_ASPECT_RATIO_TOLERANCE = float(
+    os.getenv("SOCIAL_REEL_ASPECT_RATIO_TOLERANCE", "0.03")
+)
+SOCIAL_REEL_FFMPEG_PRESET = os.getenv("SOCIAL_REEL_FFMPEG_PRESET", "medium")
+SOCIAL_FFMPEG_BINARY = os.getenv("SOCIAL_FFMPEG_BINARY", "ffmpeg")
+SOCIAL_FFPROBE_BINARY = os.getenv("SOCIAL_FFPROBE_BINARY", "ffprobe")
 ALLOWED_MEDIA_CONTENT_TYPES = env_list(
     "ALLOWED_MEDIA_CONTENT_TYPES",
     ["image/jpeg", "image/png", "image/webp", "application/pdf", "video/mp4"],
@@ -278,6 +296,17 @@ META_HTTP_READ_TIMEOUT_SECONDS = float(
 META_INSTAGRAM_READ_TIMEOUT_SECONDS = float(
     os.getenv("META_INSTAGRAM_READ_TIMEOUT_SECONDS", "20")
 )
+INSTAGRAM_PUBLISH_QUOTA_LIMIT = int(
+    os.getenv("INSTAGRAM_PUBLISH_QUOTA_LIMIT", "100")
+)
+META_REMOTE_QUOTA_CHECK_ENABLED = env_bool(
+    "META_REMOTE_QUOTA_CHECK_ENABLED",
+    False,
+)
+SOCIAL_AUTO_CREATE_LEADS = env_bool("SOCIAL_AUTO_CREATE_LEADS", True)
+META_WEBHOOK_MAX_RETRY_ATTEMPTS = int(
+    os.getenv("META_WEBHOOK_MAX_RETRY_ATTEMPTS", "5")
+)
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -319,6 +348,7 @@ REST_FRAMEWORK = {
         "public_event": os.getenv("THROTTLE_PUBLIC_EVENT", "120/hour"),
         "oauth": os.getenv("THROTTLE_OAUTH", "20/hour"),
         "social_publish": os.getenv("THROTTLE_SOCIAL_PUBLISH", "30/hour"),
+        "social_upload": os.getenv("THROTTLE_SOCIAL_UPLOAD", "10/hour"),
         "meta_webhook": os.getenv("THROTTLE_META_WEBHOOK", "600/minute"),
     },
 }

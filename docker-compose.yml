@@ -60,6 +60,8 @@ services:
       python manage.py send_saved_search_alerts;
       python manage.py process_listing_freshness;
       python manage.py publish_scheduled_posts;
+      python manage.py retry_failed_meta_webhooks;
+      python manage.py cleanup_social_connection_sessions;
       sleep 300;
       done"
     volumes:

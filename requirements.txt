@@ -13,6 +13,8 @@ drf-spectacular==0.30.0
 Pillow==12.3.0
 django-cors-headers==4.9.0
 requests==2.34.2
+ffmpeg-python==0.2.0
+future==1.0.0
 qrcode==8.2
 reportlab==4.4.3
 bikram-sambat==0.2.0

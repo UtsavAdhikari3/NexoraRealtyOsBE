@@ -4,12 +4,13 @@ import json
 from datetime import datetime, timezone as datetime_timezone
 
 from django.conf import settings
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import F
 from django.utils import timezone
 
-from leads.models import LeadInteraction
-from social_media.models import SocialAccount
+from leads.automation import apply_lead_automation
+from leads.models import Lead, LeadInteraction, LeadStatusHistory
+from social_media.models import SocialAccount, SocialPublishResult
 
 from .models import Conversation, SocialContact, SocialMessage, WebhookEvent
 
@@ -77,6 +78,100 @@ def infer_message_type(message, attachments, is_postback=False):
     return SocialMessage.TYPE_UNSUPPORTED
 
 
+def extract_referral(event, message, postback):
+    for candidate in (
+        event.get("referral"),
+        (message or {}).get("referral"),
+        (postback or {}).get("referral"),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def find_referral_post(account, referral):
+    identifiers = {
+        str(referral.get(key))
+        for key in ("post_id", "media_id", "publication_id")
+        if referral.get(key)
+    }
+    if not identifiers:
+        return None
+    result = SocialPublishResult.objects.select_related("post").filter(
+        social_account=account,
+    ).filter(
+        models.Q(external_post_id__in=identifiers)
+        | models.Q(external_media_id__in=identifiers)
+    ).first()
+    return result.post if result else None
+
+
+def ensure_automatic_social_lead(conversation, contact, referral=None):
+    if conversation.linked_lead_id:
+        lead = conversation.linked_lead
+        custom_data = dict(lead.custom_data or {})
+        if referral:
+            custom_data["social_referral"] = referral
+        if conversation.source_social_post_id:
+            custom_data["source_social_post_id"] = conversation.source_social_post_id
+        if custom_data != (lead.custom_data or {}):
+            lead.custom_data = custom_data
+            lead.save(update_fields=["custom_data", "updated_at"])
+        return lead
+
+    contact = SocialContact.objects.select_for_update().get(pk=contact.pk)
+    if contact.linked_lead_id:
+        conversation.linked_lead = contact.linked_lead
+        conversation.save(update_fields=["linked_lead", "updated_at"])
+        return contact.linked_lead
+
+    social_key = f"{contact.social_account_id}:{contact.external_user_id}"
+    lead = Lead.objects.filter(
+        agency=conversation.agency,
+        custom_data__social_contact_key=social_key,
+    ).first()
+    if lead is None:
+        display_name = contact.username
+        if not display_name and contact.display_name != contact.external_user_id:
+            display_name = contact.display_name
+        display_name = display_name or (
+            f"{conversation.platform.title()} contact {contact.external_user_id[-6:]}"
+        )
+        custom_data = {
+            "social_contact_key": social_key,
+            "social_account_id": contact.social_account_id,
+            "social_external_id": contact.external_user_id,
+            "social_platform": conversation.platform,
+        }
+        if referral:
+            custom_data["social_referral"] = referral
+        if conversation.source_social_post_id:
+            custom_data["source_social_post_id"] = conversation.source_social_post_id
+        lead = Lead.objects.create(
+            agency=conversation.agency,
+            assigned_agent=conversation.assigned_agent,
+            full_name=display_name,
+            phone="",
+            source=conversation.platform,
+            status="new",
+            custom_data=custom_data,
+            notes="Automatically created from the first inbound social message.",
+            last_contacted_at=conversation.last_message_at,
+        )
+        LeadStatusHistory.objects.create(
+            agency=conversation.agency,
+            lead=lead,
+            to_status=lead.status,
+        )
+        apply_lead_automation(lead)
+
+    contact.linked_lead = lead
+    conversation.linked_lead = lead
+    contact.save(update_fields=["linked_lead"])
+    conversation.save(update_fields=["linked_lead", "updated_at"])
+    return lead
+
+
 @transaction.atomic
 def ingest_messaging_event(account, event):
     message = event.get("message")
@@ -104,6 +199,7 @@ def ingest_messaging_event(account, event):
         return
 
     payload = message or postback
+    referral = extract_referral(event, message, postback)
     is_echo = bool(message and message.get("is_echo"))
     sender_id = str((event.get("sender") or {}).get("id", ""))
     recipient_id = str((event.get("recipient") or {}).get("id", ""))
@@ -126,6 +222,18 @@ def ingest_messaging_event(account, event):
         external_conversation_id=contact_external_id,
         defaults={"linked_lead": contact.linked_lead},
     )
+    if referral:
+        conversation.referral_data = referral
+        source_post = find_referral_post(account, referral)
+        if source_post:
+            conversation.source_social_post = source_post
+        conversation.save(
+            update_fields=[
+                "referral_data",
+                "source_social_post",
+                "updated_at",
+            ]
+        )
 
     attachments = normalize_attachments(message or {})
     text = payload.get("text") or payload.get("title") or payload.get("payload") or ""
@@ -155,6 +263,7 @@ def ingest_messaging_event(account, event):
             "sender_external_id": sender_id,
             "text": text,
             "attachments": attachments,
+            "referral_data": referral,
             "delivery_status": (
                 SocialMessage.STATUS_SENT
                 if is_echo
@@ -177,6 +286,9 @@ def ingest_messaging_event(account, event):
         "status": Conversation.STATUS_OPEN,
     }
     if direction == SocialMessage.DIRECTION_INBOUND:
+        conversation.last_message_at = sent_at
+        if settings.SOCIAL_AUTO_CREATE_LEADS:
+            ensure_automatic_social_lead(conversation, contact, referral)
         Conversation.objects.filter(id=conversation.id).update(
             unread_count=F("unread_count") + 1,
             **update_values,
@@ -206,6 +318,21 @@ def process_meta_payload(payload):
             ingest_messaging_event(account, messaging_event)
 
 
+def process_webhook_event(event):
+    payload = event.raw_payload
+    event.attempts += 1
+    try:
+        process_meta_payload(payload)
+        event.status = WebhookEvent.STATUS_PROCESSED
+        event.processed_at = timezone.now()
+        event.error_message = ""
+    except Exception as exc:
+        event.status = WebhookEvent.STATUS_FAILED
+        event.error_message = str(exc)
+    event.save()
+    return event
+
+
 def record_and_process_webhook(raw_body):
     payload = json.loads(raw_body.decode("utf-8"))
     payload_hash = hashlib.sha256(raw_body).hexdigest()
@@ -219,15 +346,4 @@ def record_and_process_webhook(raw_body):
     )
     if not created and event.status == WebhookEvent.STATUS_PROCESSED:
         return event, False
-
-    event.attempts += 1
-    try:
-        process_meta_payload(payload)
-        event.status = WebhookEvent.STATUS_PROCESSED
-        event.processed_at = timezone.now()
-        event.error_message = ""
-    except Exception as exc:
-        event.status = WebhookEvent.STATUS_FAILED
-        event.error_message = str(exc)
-    event.save()
-    return event, created
+    return process_webhook_event(event), created

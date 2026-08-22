@@ -36,6 +36,14 @@ class PropertyDistributionSocialDraftRequestSerializer(serializers.Serializer):
             "publish it through /api/social-posts/posts/{id}/publish/."
         ),
     )
+    platforms = serializers.ListField(
+        child=serializers.ChoiceField(choices=["facebook", "instagram"]),
+        required=False,
+        allow_empty=False,
+    )
+
+    def validate_platforms(self, value):
+        return list(dict.fromkeys(value))
 
 
 class PropertyMediaSerializer(serializers.ModelSerializer):

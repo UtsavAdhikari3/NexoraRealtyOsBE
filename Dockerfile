@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     fonts-dejavu-core \
     fonts-noto-core \
     netcat-openbsd \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

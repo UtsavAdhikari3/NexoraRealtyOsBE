@@ -61,6 +61,14 @@ class Conversation(models.Model):
         on_delete=models.CASCADE,
         related_name="inbox_conversations",
     )
+    source_social_post = models.ForeignKey(
+        "social_media.SocialPost",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attributed_conversations",
+    )
+    referral_data = models.JSONField(default=dict, blank=True)
     social_account = models.ForeignKey(
         "social_media.SocialAccount",
         on_delete=models.CASCADE,
@@ -179,6 +187,7 @@ class SocialMessage(models.Model):
     sender_external_id = models.CharField(max_length=255, blank=True)
     text = models.TextField(blank=True)
     attachments = models.JSONField(default=list, blank=True)
+    referral_data = models.JSONField(default=dict, blank=True)
     delivery_status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
