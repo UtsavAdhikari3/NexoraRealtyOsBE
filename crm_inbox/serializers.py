@@ -11,6 +11,9 @@ User = get_user_model()
 
 
 class SocialContactSerializer(serializers.ModelSerializer):
+    display_label = serializers.SerializerMethodField()
+    profile_available = serializers.SerializerMethodField()
+
     class Meta:
         model = SocialContact
         fields = [
@@ -18,12 +21,31 @@ class SocialContactSerializer(serializers.ModelSerializer):
             "platform",
             "external_user_id",
             "display_name",
+            "display_label",
             "username",
             "profile_image_url",
+            "profile_data",
+            "profile_available",
+            "profile_synced_at",
             "linked_lead",
             "first_seen_at",
             "last_seen_at",
         ]
+
+    def get_display_label(self, obj):
+        if obj.display_name and obj.display_name != obj.external_user_id:
+            return obj.display_name
+        if obj.username:
+            return f"@{obj.username}"
+        suffix = obj.external_user_id[-4:] if obj.external_user_id else ""
+        return f"{obj.platform.title()} contact •••{suffix}"
+
+    def get_profile_available(self, obj):
+        return bool(
+            (obj.display_name and obj.display_name != obj.external_user_id)
+            or obj.username
+            or obj.profile_image_url
+        )
 
 
 class SocialMessageSerializer(serializers.ModelSerializer):

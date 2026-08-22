@@ -18,6 +18,9 @@ class SocialContact(models.Model):
     display_name = models.CharField(max_length=255, blank=True)
     username = models.CharField(max_length=255, blank=True)
     profile_image_url = models.URLField(max_length=1000, blank=True)
+    profile_data = models.JSONField(default=dict, blank=True)
+    profile_synced_at = models.DateTimeField(null=True, blank=True)
+    profile_lookup_error = models.TextField(blank=True)
     linked_lead = models.ForeignKey(
         "leads.Lead",
         on_delete=models.SET_NULL,

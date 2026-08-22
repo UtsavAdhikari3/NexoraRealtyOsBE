@@ -516,3 +516,35 @@ def send_meta_text_message(account, recipient_external_id, text):
     )
     raise_for_meta_error(response)
     return response.json()
+
+
+def get_meta_messaging_profile(account, external_user_id):
+    """Resolve a PSID/IGSID using the Page token that received the message."""
+    if account.platform == account.PLATFORM_INSTAGRAM:
+        fields = ",".join(
+            [
+                "name",
+                "username",
+                "profile_pic",
+                "follower_count",
+                "is_user_follow_business",
+                "is_business_follow_user",
+                "is_verified_user",
+            ]
+        )
+    else:
+        fields = "first_name,last_name,profile_pic"
+
+    response = requests.get(
+        f"{graph_base_url()}/{external_user_id}",
+        params={
+            "fields": fields,
+            "access_token": account.access_token,
+        },
+        timeout=(
+            settings.META_HTTP_CONNECT_TIMEOUT_SECONDS,
+            settings.META_PROFILE_READ_TIMEOUT_SECONDS,
+        ),
+    )
+    raise_for_meta_error(response)
+    return response.json()
