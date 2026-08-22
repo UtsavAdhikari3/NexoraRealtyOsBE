@@ -65,6 +65,15 @@ class PublicPropertyDiscoveryTests(APITestCase):
     def test_list_is_paginated_and_uses_bounded_card_contract(self):
         for index in range(26):
             self.make_property(f"Listing {index:02d}")
+        property_with_media = Property.objects.filter(agency=self.agency).order_by("-created_at").first()
+        PropertyMedia.objects.create(
+            agency=self.agency, property=property_with_media, media_type="image",
+            file="property_media/card.jpg", is_public=True, is_primary=True,
+        )
+        PropertyMedia.objects.create(
+            agency=self.agency, property=property_with_media, media_type="reel",
+            file="property_media/tour.mp4", is_public=True,
+        )
 
         first = self.client.get(self.list_url)
         second = self.client.get(self.list_url, {"page": 2})
@@ -75,6 +84,9 @@ class PublicPropertyDiscoveryTests(APITestCase):
         self.assertEqual(len(second.data["results"]), 2)
         card = first.data["results"][0]
         self.assertIn("primary_image", card)
+        media_card = next(item for item in first.data["results"] if item["id"] == property_with_media.id)
+        self.assertEqual(media_card["image_count"], 1)
+        self.assertEqual(media_card["video_count"], 1)
         self.assertNotIn("description", card)
         self.assertNotIn("media", card)
 

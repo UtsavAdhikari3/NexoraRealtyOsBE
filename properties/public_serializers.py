@@ -76,6 +76,8 @@ class PublicPropertyCardSerializer(serializers.ModelSerializer):
     longitude = serializers.SerializerMethodField()
     tole = serializers.SerializerMethodField()
     neighbourhood = serializers.SerializerMethodField()
+    image_count = serializers.SerializerMethodField()
+    video_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Property
@@ -85,8 +87,19 @@ class PublicPropertyCardSerializer(serializers.ModelSerializer):
             "city", "municipality", "neighbourhood", "tole", "location_display",
             "latitude", "longitude",
             "bedrooms", "bathrooms", "area", "is_featured", "published_at",
-            "freshness_state", "verification", "primary_image", "assigned_agent",
+            "freshness_state", "verification", "primary_image", "image_count",
+            "video_count", "assigned_agent",
         ]
+
+    def _public_media(self, obj):
+        media_items = getattr(obj, "_ordered_public_media", None)
+        return media_items if media_items is not None else list(obj.media.filter(is_public=True))
+
+    def get_image_count(self, obj):
+        return sum(item.media_type == "image" for item in self._public_media(obj))
+
+    def get_video_count(self, obj):
+        return sum(item.media_type in {"video", "reel"} for item in self._public_media(obj))
 
     def get_display_property_id(self, obj):
         return f"LP-{obj.id:03d}"
@@ -124,9 +137,7 @@ class PublicPropertyCardSerializer(serializers.ModelSerializer):
         return None
 
     def get_primary_image(self, obj):
-        media_items = getattr(obj, "_ordered_public_media", None)
-        if media_items is None:
-            media_items = list(obj.media.all())
+        media_items = self._public_media(obj)
         image = next((item for item in media_items if item.media_type == "image"), None)
         if not image:
             return None
