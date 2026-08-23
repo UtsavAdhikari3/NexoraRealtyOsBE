@@ -632,7 +632,7 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             user_access_token="test-user-token",
         )
 
-    def test_instagram_delete_requires_reconnect_for_management_token(self):
+    def test_instagram_delete_without_management_token_removes_local_post_with_warning(self):
         SocialPublishResult.objects.create(
             post=self.post,
             social_account=self.instagram_account,
@@ -646,9 +646,13 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             reverse("social-post-detail", kwargs={"pk": self.post.id})
         )
 
-        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data["code"], "instagram_reconnect_required")
-        self.assertTrue(SocialPost.objects.filter(pk=self.post.id).exists())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["code"], "post_deleted_with_remote_warnings")
+        self.assertEqual(
+            response.data["remote_deletion_warnings"][0]["code"],
+            "instagram_reconnect_required",
+        )
+        self.assertFalse(SocialPost.objects.filter(pk=self.post.id).exists())
 
     @patch(
         "social_media.views.delete_facebook_post",
@@ -717,7 +721,10 @@ class SocialPublishingMVPAPITestCase(APITestCase):
         "social_media.views.delete_facebook_post",
         side_effect=MetaAPIError("Permission denied", code=200),
     )
-    def test_delete_keeps_local_post_when_facebook_delete_fails(self, delete_mock):
+    def test_delete_removes_local_post_with_warning_when_facebook_delete_fails(
+        self,
+        delete_mock,
+    ):
         SocialPublishResult.objects.create(
             post=self.post,
             social_account=self.account,
@@ -731,6 +738,56 @@ class SocialPublishingMVPAPITestCase(APITestCase):
             reverse("social-post-detail", kwargs={"pk": self.post.id})
         )
 
-        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
-        self.assertTrue(SocialPost.objects.filter(pk=self.post.id).exists())
-        self.assertEqual(response.data["meta_error"]["code"], 200)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(SocialPost.objects.filter(pk=self.post.id).exists())
+        self.assertEqual(response.data["code"], "post_deleted_with_remote_warnings")
+        warning = response.data["remote_deletion_warnings"][0]
+        self.assertEqual(warning["platform"], SocialAccount.PLATFORM_FACEBOOK)
+        self.assertEqual(warning["meta_error"]["code"], 200)
+
+    @patch(
+        "social_media.views.delete_facebook_post",
+        return_value={"success": True},
+    )
+    @patch(
+        "social_media.views.delete_instagram_media",
+        side_effect=MetaAPIError("Instagram permission denied", code=200),
+    )
+    def test_instagram_delete_failure_does_not_skip_facebook_cleanup(
+        self,
+        instagram_delete_mock,
+        facebook_delete_mock,
+    ):
+        self.instagram_account.user_access_token = "test-user-token"
+        self.instagram_account.save(update_fields=["user_access_token"])
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.instagram_account,
+            platform=SocialAccount.PLATFORM_INSTAGRAM,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="ig-media-456",
+        )
+        SocialPublishResult.objects.create(
+            post=self.post,
+            social_account=self.account,
+            platform=SocialAccount.PLATFORM_FACEBOOK,
+            status=SocialPublishResult.STATUS_PUBLISHED,
+            external_post_id="page-123_456",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(
+            reverse("social-post-detail", kwargs={"pk": self.post.id})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(SocialPost.objects.filter(pk=self.post.id).exists())
+        instagram_delete_mock.assert_called_once()
+        facebook_delete_mock.assert_called_once_with(
+            post_id="page-123_456",
+            page_access_token="test-token",
+        )
+        self.assertEqual(
+            response.data["remote_deletion_warnings"][0]["platform"],
+            SocialAccount.PLATFORM_INSTAGRAM,
+        )

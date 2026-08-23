@@ -370,6 +370,23 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        remote_warnings = []
+
+        def add_remote_warning(platform, detail, *, exc=None, code=None):
+            warning = {
+                "platform": platform,
+                "detail": detail,
+            }
+            if code:
+                warning["code"] = code
+            if isinstance(exc, MetaAPIError):
+                warning["meta_error"] = {
+                    "message": str(exc),
+                    "code": exc.code,
+                    "type": exc.error_type,
+                }
+            remote_warnings.append(warning)
+
         instagram_results = instance.publish_results.select_related(
             "social_account"
         ).filter(
@@ -383,56 +400,41 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
                 or publish_result.external_post_id
             )
             if not media_id:
-                return Response(
-                    {
-                        "detail": (
-                            "The published Instagram media ID is missing, so the post "
-                            "was not deleted locally."
-                        )
-                    },
-                    status=status.HTTP_409_CONFLICT,
+                add_remote_warning(
+                    SocialAccount.PLATFORM_INSTAGRAM,
+                    "The published Instagram media ID is missing.",
+                    code="instagram_media_id_missing",
                 )
+                continue
             management_token = publish_result.social_account.user_access_token
             if not management_token:
-                return Response(
-                    {
-                        "detail": (
-                            "Reconnect Meta before deleting this Instagram post. "
-                            "Nexora needs the instagram_manage_contents permission."
-                        ),
-                        "code": "instagram_reconnect_required",
-                    },
-                    status=status.HTTP_409_CONFLICT,
+                add_remote_warning(
+                    SocialAccount.PLATFORM_INSTAGRAM,
+                    (
+                        "Nexora could not delete the Instagram media because this "
+                        "connection does not have a management token."
+                    ),
+                    code="instagram_reconnect_required",
                 )
+                continue
             try:
                 delete_instagram_media(
                     media_id=media_id,
                     user_access_token=management_token,
                 )
             except MetaAPIError as exc:
-                return Response(
-                    {
-                        "detail": (
-                            "Instagram rejected the media deletion. The local post "
-                            "was left unchanged."
-                        ),
-                        "meta_error": {
-                            "message": str(exc),
-                            "code": exc.code,
-                            "type": exc.error_type,
-                        },
-                    },
-                    status=status.HTTP_502_BAD_GATEWAY,
+                add_remote_warning(
+                    SocialAccount.PLATFORM_INSTAGRAM,
+                    "Instagram rejected the media deletion.",
+                    exc=exc,
+                    code="instagram_delete_rejected",
                 )
-            except requests.RequestException:
-                return Response(
-                    {
-                        "detail": (
-                            "Instagram is temporarily unreachable. The local post was "
-                            "left unchanged."
-                        )
-                    },
-                    status=status.HTTP_502_BAD_GATEWAY,
+            except requests.RequestException as exc:
+                add_remote_warning(
+                    SocialAccount.PLATFORM_INSTAGRAM,
+                    "Instagram was temporarily unreachable during deletion.",
+                    exc=exc,
+                    code="instagram_delete_unreachable",
                 )
 
         facebook_results = instance.publish_results.select_related(
@@ -444,15 +446,12 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         for publish_result in facebook_results:
             if not publish_result.external_post_id:
-                return Response(
-                    {
-                        "detail": (
-                            "The published Facebook post ID is missing, so the post "
-                            "was not deleted locally."
-                        )
-                    },
-                    status=status.HTTP_409_CONFLICT,
+                add_remote_warning(
+                    SocialAccount.PLATFORM_FACEBOOK,
+                    "The published Facebook post ID is missing.",
+                    code="facebook_post_id_missing",
                 )
+                continue
             try:
                 media_count = instance.media_items.count()
                 if media_count > 1:
@@ -471,29 +470,18 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
                     page_access_token=publish_result.social_account.access_token,
                 )
             except MetaAPIError as exc:
-                return Response(
-                    {
-                        "detail": (
-                            "Facebook rejected the post deletion. The local post was "
-                            "left unchanged."
-                        ),
-                        "meta_error": {
-                            "message": str(exc),
-                            "code": exc.code,
-                            "type": exc.error_type,
-                        },
-                    },
-                    status=status.HTTP_502_BAD_GATEWAY,
+                add_remote_warning(
+                    SocialAccount.PLATFORM_FACEBOOK,
+                    "Facebook rejected the post deletion.",
+                    exc=exc,
+                    code="facebook_delete_rejected",
                 )
-            except requests.RequestException:
-                return Response(
-                    {
-                        "detail": (
-                            "Facebook is temporarily unreachable. The local post was "
-                            "left unchanged."
-                        )
-                    },
-                    status=status.HTTP_502_BAD_GATEWAY,
+            except requests.RequestException as exc:
+                add_remote_warning(
+                    SocialAccount.PLATFORM_FACEBOOK,
+                    "Facebook was temporarily unreachable during deletion.",
+                    exc=exc,
+                    code="facebook_delete_unreachable",
                 )
 
         video_name = instance.video.name if instance.video else ""
@@ -501,6 +489,23 @@ class SocialPostDetailView(generics.RetrieveUpdateDestroyAPIView):
         self.perform_destroy(instance)
         if video_name and video_storage:
             transaction.on_commit(lambda: video_storage.delete(video_name))
+
+        if remote_warnings:
+            platform_names = sorted(
+                {warning["platform"].title() for warning in remote_warnings}
+            )
+            return Response(
+                {
+                    "detail": (
+                        "Post removed from Nexora, but Meta could not confirm deletion "
+                        f"from {' and '.join(platform_names)}. Check the platform and "
+                        "remove the post manually if it is still visible."
+                    ),
+                    "code": "post_deleted_with_remote_warnings",
+                    "remote_deletion_warnings": remote_warnings,
+                },
+                status=status.HTTP_200_OK,
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
