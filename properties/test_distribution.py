@@ -166,6 +166,86 @@ class PropertyDistributionTests(APITestCase):
         self.assertTrue(post.image.name.endswith(".jpg"))
         publish_mock.assert_not_called()
 
+    @patch(
+        "social_media.services.publishing.publish_instagram_images",
+        return_value=("instagram-parent", "instagram-media"),
+    )
+    @patch(
+        "social_media.services.publishing.publish_facebook_images",
+        return_value=({"id": "facebook-post"}, "facebook-photo-1"),
+    )
+    def test_property_post_builds_and_publishes_five_image_carousel_to_both_platforms(
+        self,
+        facebook_mock,
+        instagram_mock,
+    ):
+        facebook = SocialAccount.objects.create(
+            agency=self.agency,
+            provider="meta",
+            platform="facebook",
+            external_id="page-carousel",
+            page_id="page-carousel",
+            name="Property Page",
+            access_token="page-token",
+            status=SocialAccount.STATUS_CONNECTED,
+            connected_by=self.manager,
+        )
+        SocialAccount.objects.create(
+            agency=self.agency,
+            provider="meta",
+            platform="instagram",
+            external_id="instagram-carousel",
+            page_id="page-carousel",
+            name="Property Instagram",
+            access_token="page-token",
+            status=SocialAccount.STATUS_CONNECTED,
+            connected_by=self.manager,
+        )
+        for index in range(5):
+            PropertyMedia.objects.create(
+                agency=self.agency,
+                property=self.property,
+                media_type="image",
+                file=image_upload(f"property-{index + 2}.jpg"),
+                title=f"Property photo {index + 2}",
+                sort_order=index + 1,
+                uploaded_by=self.manager,
+            )
+
+        draft_response = self.client.post(
+            reverse(
+                "property-distribution-social-draft",
+                kwargs={"property_id": self.property.id},
+            ),
+            {
+                "social_account": facebook.id,
+                "language": "english",
+                "platforms": ["facebook", "instagram"],
+            },
+            format="json",
+        )
+        self.assertEqual(draft_response.status_code, 201, draft_response.data)
+        post = SocialPost.objects.get(id=draft_response.data["id"])
+        media = list(post.media_items.all())
+        self.assertEqual(len(media), 5)
+        self.assertEqual([item.position for item in media], [0, 1, 2, 3, 4])
+        self.assertEqual(post.image.name, media[0].image.name)
+        for item in media:
+            with item.image.open("rb") as image_file:
+                image = Image.open(image_file)
+                self.assertEqual(image.format, "JPEG")
+                self.assertEqual(image.size, (1200, 630))
+
+        publish_response = self.client.post(
+            reverse("social-post-publish", kwargs={"pk": post.id}),
+            {"platforms": ["facebook", "instagram"]},
+            format="json",
+        )
+        self.assertEqual(publish_response.status_code, 200, publish_response.data)
+        self.assertEqual(publish_response.data["status"], "published")
+        self.assertEqual(len(facebook_mock.call_args.args[2]), 5)
+        instagram_mock.assert_called_once()
+
     def test_social_draft_requires_a_connected_account_id(self):
         response = self.client.post(reverse(
             "property-distribution-social-draft",

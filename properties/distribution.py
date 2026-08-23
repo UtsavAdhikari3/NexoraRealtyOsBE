@@ -252,6 +252,36 @@ def social_image(property_obj, asset_type, url):
     return output.getvalue()
 
 
+def social_carousel_images(property_obj, asset_type, url, max_images=5):
+    """Return a branded cover followed by ordered, platform-safe listing photos."""
+    width, height, _, _ = ASSET_SPECS[asset_type]
+    images = [social_image(property_obj, asset_type, url)]
+    primary = _primary_media(property_obj)
+    candidates = [
+        media
+        for media in property_obj.media.all()
+        if media.media_type == "image"
+        and media.file
+        and media.is_public
+        and (primary is None or media.id != primary.id)
+    ]
+    for media in candidates:
+        if len(images) >= max_images:
+            break
+        image = _open_media_image(media)
+        if image is None:
+            continue
+        fitted = ImageOps.fit(
+            image,
+            (width, height),
+            method=Image.Resampling.LANCZOS,
+        )
+        output = io.BytesIO()
+        fitted.save(output, format="JPEG", quality=92, optimize=True)
+        images.append(output.getvalue())
+    return images
+
+
 def watermarked_image(image, property_obj):
     image = image.convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))

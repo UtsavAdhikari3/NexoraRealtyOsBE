@@ -924,9 +924,15 @@ class PropertyDistributionSocialDraftView(APIView):
             "performed separately through /api/social-posts/posts/{id}/publish/."
         ),
     )
+    @transaction.atomic
     def post(self, request, property_id):
-        from social_media.models import SocialAccount, SocialPost
-        from .distribution import captions, canonical_property_url, social_image, tracked_url
+        from social_media.models import SocialAccount, SocialPost, SocialPostMedia
+        from .distribution import (
+            captions,
+            canonical_property_url,
+            social_carousel_images,
+            tracked_url,
+        )
 
         request_serializer = PropertyDistributionSocialDraftRequestSerializer(
             data=request.data
@@ -974,7 +980,7 @@ class PropertyDistributionSocialDraftView(APIView):
                 agency=request.user.agency, is_active=True,
             )
         url = tracked_url(link, request) if link else canonical_property_url(property_obj)
-        image_bytes = social_image(property_obj, asset_type, url)
+        image_payloads = social_carousel_images(property_obj, asset_type, url)
         post = SocialPost(
             agency=request.user.agency,
             property=property_obj,
@@ -985,8 +991,29 @@ class PropertyDistributionSocialDraftView(APIView):
             status=SocialPost.STATUS_DRAFT,
             created_by=request.user,
         )
-        post.image.save(f"LP-{property_obj.id:03d}-{asset_type}.jpg", ContentFile(image_bytes), save=False)
+        post.image.save(
+            f"LP-{property_obj.id:03d}-{asset_type}.jpg",
+            ContentFile(image_payloads[0]),
+            save=False,
+        )
         post.save()
+        SocialPostMedia.objects.create(
+            post=post,
+            image=post.image.name,
+            position=0,
+        )
+        for position, image_bytes in enumerate(image_payloads[1:], start=1):
+            SocialPostMedia.objects.create(
+                post=post,
+                image=ContentFile(
+                    image_bytes,
+                    name=(
+                        f"LP-{property_obj.id:03d}-{asset_type}-"
+                        f"slide-{position + 1}.jpg"
+                    ),
+                ),
+                position=position,
+            )
         return Response(
             SocialPostSerializer(post, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
