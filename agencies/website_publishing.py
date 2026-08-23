@@ -9,7 +9,7 @@ from .website_onboarding import advance_website_draft_revision, materialize_webs
 def publish_website_snapshot(agency: Agency, user, source_version=None):
     """Publish a locked agency draft and append an immutable version row."""
     now = timezone.now()
-    published = materialize_website_config(agency)
+    published = materialize_website_config(agency, sanitize_legacy_phones=True)
     next_version = agency.website_config_version + 1
     version = WebsiteVersion.objects.create(
         agency=agency,

@@ -308,7 +308,7 @@ class WebsiteMediaView(WebsiteOnboardingView):
         extension = self.allowed_types[content_type]
         path = f"agency_websites/{agency.id}/{kind}/{uuid4().hex}{extension}"
         saved_path = default_storage.save(path, upload)
-        config = materialize_website_config(agency)
+        config = materialize_website_config(agency, sanitize_legacy_phones=True)
         previous = config["media"].get(kind)
         if kind == "partner_logos":
             partners = list(previous or [])
@@ -337,7 +337,7 @@ class WebsiteMediaView(WebsiteOnboardingView):
         kind = str(request.data.get("kind", "")).strip()
         if kind not in MEDIA_KEYS:
             return Response({"kind": ["Choose a supported website media type."]}, status=status.HTTP_400_BAD_REQUEST)
-        config = materialize_website_config(agency)
+        config = materialize_website_config(agency, sanitize_legacy_phones=True)
         previous = config["media"].get(kind)
         if kind == "partner_logos":
             target = str(request.data.get("path", ""))

@@ -396,7 +396,9 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data["website_draft_config"] = materialize_website_config(instance)
+        data["website_draft_config"] = materialize_website_config(
+            instance, sanitize_legacy_phones=True
+        )
         return data
 
     def get_completion_percentage(self, obj):
@@ -418,7 +420,9 @@ class WebsiteOnboardingSerializer(serializers.ModelSerializer):
 
     def get_media_urls(self, obj):
         from django.core.files.storage import default_storage
-        media = materialize_website_config(obj).get("media", {})
+        media = materialize_website_config(
+            obj, sanitize_legacy_phones=True
+        ).get("media", {})
         request = self.context.get("request")
         def resolve(value):
             if not value:
