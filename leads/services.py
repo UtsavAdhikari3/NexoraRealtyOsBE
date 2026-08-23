@@ -1,11 +1,11 @@
 from django.db.models import Q
-from agencies.localization import normalize_nepal_phone
+from agencies.phone import nepal_phone_national_digits, normalize_nepal_phone
 
 from .models import Lead, LeadStatusHistory
 
 
 def normalize_phone(value):
-    """Normalize Nepal phone numbers while retaining international compatibility."""
+    """Normalize supported Nepal phone numbers to the +977 storage format."""
     return normalize_nepal_phone(value)
 
 
@@ -23,9 +23,10 @@ def get_or_create_public_lead(
     property_obj=None,
 ):
     normalized_phone = normalize_phone(phone)
+    national_phone = nepal_phone_national_digits(phone)
     normalized_email = (email or "").lower().strip()
 
-    identity_filter = Q(phone=normalized_phone)
+    identity_filter = Q(phone__in={normalized_phone, national_phone})
     if normalized_email:
         identity_filter |= Q(email__iexact=normalized_email)
 
@@ -39,6 +40,10 @@ def get_or_create_public_lead(
 
     if lead:
         changed_fields = []
+
+        if lead.phone != normalized_phone:
+            lead.phone = normalized_phone
+            changed_fields.append("phone")
 
         if assigned_agent and lead.assigned_agent_id is None:
             lead.assigned_agent = assigned_agent

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
-from leads.services import normalize_phone
+from agencies.serializer_fields import NepalPhoneField
 
 from .models import SiteVisit
 
@@ -193,7 +193,7 @@ class SiteVisitSerializer(serializers.ModelSerializer):
 
 class PublicSiteVisitRequestSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
-    phone = serializers.CharField(max_length=30)
+    phone = NepalPhoneField()
     email = serializers.EmailField(required=False, allow_blank=True)
     utm_source = serializers.CharField(max_length=100, required=False, allow_blank=True)
     utm_medium = serializers.CharField(max_length=100, required=False, allow_blank=True)
@@ -209,12 +209,6 @@ class PublicSiteVisitRequestSerializer(serializers.Serializer):
             "base_template": "textarea.html"
         }
     )
-
-    def validate_phone(self, value):
-        normalized = normalize_phone(value)
-        if len(normalized.lstrip("+")) < 7:
-            raise serializers.ValidationError("Enter a valid phone number.")
-        return normalized
 
     def validate_preferred_datetime(self, value):
         if value <= timezone.now():

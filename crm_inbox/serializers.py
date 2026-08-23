@@ -3,7 +3,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from leads.models import Lead
-from leads.services import normalize_phone
+from agencies.serializer_fields import NepalPhoneField
 
 from .models import Conversation, SocialContact, SocialMessage
 
@@ -146,14 +146,8 @@ class LinkLeadSerializer(serializers.Serializer):
 
 class CreateLeadFromConversationSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
-    phone = serializers.CharField(max_length=30)
+    phone = NepalPhoneField()
     email = serializers.EmailField(required=False, allow_blank=True)
-
-    def validate_phone(self, value):
-        normalized = normalize_phone(value)
-        if len(normalized.lstrip("+")) < 7:
-            raise serializers.ValidationError("Enter a valid phone number.")
-        return normalized
 
 
 class ConversationStatusSerializer(serializers.Serializer):

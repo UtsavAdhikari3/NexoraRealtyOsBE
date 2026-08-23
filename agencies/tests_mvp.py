@@ -108,4 +108,4 @@ class AgencyMVPAPITestCase(APITestCase):
             format="json",
         )
         self.assertEqual(contact.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Lead.objects.get().phone, "9800000000")
+        self.assertEqual(Lead.objects.get().phone, "+9779800000000")

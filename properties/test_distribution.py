@@ -267,7 +267,7 @@ class PropertyDistributionTests(APITestCase):
             "distribution_code": "abc123",
         })
         self.assertEqual(response.status_code, 201)
-        lead = Lead.objects.get(phone="9801234567")
+        lead = Lead.objects.get(phone="+9779801234567")
         self.assertEqual(
             lead.custom_data["distribution_attribution"]["utm_source"], "viber"
         )
