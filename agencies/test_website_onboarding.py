@@ -94,6 +94,30 @@ class WebsiteOnboardingAPITestCase(APITestCase):
         self.assertFalse(self.agency.is_website_published)
         self.assertEqual(self.agency.website_draft_config["hero_title"], config["hero_title"])
 
+    def test_legacy_invalid_phone_does_not_break_onboarding_read(self):
+        config = default_website_config()
+        config["public_phone"] = "12345"
+        self.agency.website_draft_config = config
+        self.agency.save(update_fields=["website_draft_config"])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("website-onboarding"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["website_draft_config"]["public_phone"], "")
+        self.assertIn("public_contact", response.data["missing_fields"])
+
+        sanitized_config = response.data["website_draft_config"]
+        sanitized_config["hero_title"] = "A safe website draft"
+        saved = self.client.patch(
+            reverse("website-onboarding"),
+            {"website_draft_config": sanitized_config},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, status.HTTP_200_OK)
+        self.agency.refresh_from_db()
+        self.assertEqual(self.agency.website_draft_config["public_phone"], "")
+
     def test_autosave_merges_nested_changes_and_increments_revision(self):
         self.client.force_authenticate(self.owner)
         original = default_website_config()

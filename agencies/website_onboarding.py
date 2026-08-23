@@ -374,7 +374,7 @@ def validate_website_config(value):
     return cleaned
 
 
-def materialize_website_config(agency, value=None):
+def materialize_website_config(agency, value=None, *, sanitize_legacy_phones=False):
     """Normalize website JSON without mutating it from organization settings.
 
     Organization fields are copied into a draft only through the explicit
@@ -382,13 +382,20 @@ def materialize_website_config(agency, value=None):
     draft and published storefront snapshots.
     """
     raw = deepcopy(value or agency.website_draft_config or agency.website_published_config or agency.website_config or {})
+    if sanitize_legacy_phones and isinstance(raw, dict):
+        # Phone validation became stricter after some agencies had already saved
+        # website drafts. A legacy value must not make the entire studio unreadable.
+        # Treat it as missing for reads/readiness; explicit writes remain strict.
+        for field in ["public_phone", "whatsapp_number", "viber_number"]:
+            if raw.get(field) and not is_valid_nepal_phone(raw[field]):
+                raw[field] = ""
     return validate_website_config(raw)
 
 
 def website_readiness(agency, config=None):
     from .template_capabilities import template_capability_errors
 
-    config = materialize_website_config(agency, config)
+    config = materialize_website_config(agency, config, sanitize_legacy_phones=True)
     media = config.get("media", {})
     checks = [
         ("agency_name", bool((agency.name or "").strip())),
