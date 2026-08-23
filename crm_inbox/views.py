@@ -114,6 +114,7 @@ class ConversationListView(generics.ListAPIView):
             queryset = queryset.filter(
                 Q(contact__display_name__icontains=search)
                 | Q(contact__username__icontains=search)
+                | Q(contact__external_user_id__icontains=search)
                 | Q(last_message_preview__icontains=search)
                 | Q(linked_lead__full_name__icontains=search)
             )
@@ -156,6 +157,22 @@ class ConversationReplyView(APIView):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         text = serializer.validated_data["text"]
+        if conversation.platform == "whatsapp":
+            latest_inbound = conversation.messages.filter(
+                direction=SocialMessage.DIRECTION_INBOUND,
+            ).order_by("-sent_at").first()
+            service_window_start = timezone.now() - timezone.timedelta(hours=24)
+            if not latest_inbound or latest_inbound.sent_at < service_window_start:
+                return Response(
+                    {
+                        "detail": (
+                            "The 24-hour WhatsApp customer service window is closed. "
+                            "An approved message template is required to restart this conversation."
+                        ),
+                        "code": "whatsapp_service_window_closed",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
         message = SocialMessage.objects.create(
             conversation=conversation,
             social_account=conversation.social_account,

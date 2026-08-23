@@ -20,6 +20,7 @@ from .serializers import (
     MetaPageSelectionSerializer,
     SocialAccountSerializer,
     SocialConnectionSessionSerializer,
+    WhatsAppConnectionCompleteSerializer,
 )
 from .services.meta import (
     build_meta_oauth_url,
@@ -33,6 +34,9 @@ from .services.meta import (
     delete_facebook_post,
     delete_instagram_media,
     get_facebook_post_photo_id,
+    exchange_whatsapp_signup_code,
+    get_whatsapp_phone_numbers,
+    subscribe_whatsapp_business_account,
 )
 from .services.publishing import publish_social_post
 from users.models import AgencyUser
@@ -733,6 +737,160 @@ class MetaConnectionSessionView(APIView):
                 "warnings": warnings,
             }
         )
+
+
+class WhatsAppConnectionStartView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "oauth"
+
+    def get(self, request):
+        require_social_connection_manager(request.user)
+        if not settings.META_APP_ID or not settings.META_WHATSAPP_LOGIN_CONFIG_ID:
+            return Response(
+                {
+                    "detail": (
+                        "WhatsApp Embedded Signup is not configured. Set "
+                        "META_APP_ID and META_WHATSAPP_LOGIN_CONFIG_ID."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        oauth_state = SocialOAuthState.create_state(
+            provider="whatsapp",
+            agency=request.user.agency,
+            user=request.user,
+        )
+        return Response(
+            {
+                "app_id": settings.META_APP_ID,
+                "config_id": settings.META_WHATSAPP_LOGIN_CONFIG_ID,
+                "state": oauth_state.state,
+                "graph_version": settings.META_GRAPH_VERSION,
+            }
+        )
+
+
+class WhatsAppConnectionCompleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "oauth"
+    serializer_class = WhatsAppConnectionCompleteSerializer
+
+    @transaction.atomic
+    def post(self, request):
+        require_social_connection_manager(request.user)
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+
+        try:
+            oauth_state = SocialOAuthState.objects.select_for_update().get(
+                provider="whatsapp",
+                state=values["state"],
+                agency=request.user.agency,
+                user=request.user,
+            )
+        except SocialOAuthState.DoesNotExist:
+            return Response(
+                {"detail": "This WhatsApp connection session is invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not oauth_state.is_valid:
+            return Response(
+                {"detail": "This WhatsApp connection session expired or was used."},
+                status=status.HTTP_410_GONE,
+            )
+
+        try:
+            token_data = exchange_whatsapp_signup_code(values["code"])
+            access_token = token_data.get("access_token")
+            if not access_token:
+                raise MetaAPIError("Meta did not return a WhatsApp access token.")
+            phone_numbers = get_whatsapp_phone_numbers(
+                values["business_account_id"],
+                access_token,
+            )
+            phone = next(
+                (
+                    item
+                    for item in phone_numbers
+                    if str(item.get("id")) == values["phone_number_id"]
+                ),
+                None,
+            )
+            if phone is None:
+                return Response(
+                    {
+                        "detail": (
+                            "The selected phone number does not belong to the "
+                            "authorized WhatsApp Business account."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if SocialAccount.objects.filter(
+                provider=SocialAccount.PROVIDER_META,
+                platform=SocialAccount.PLATFORM_WHATSAPP,
+                external_id=values["phone_number_id"],
+                status=SocialAccount.STATUS_CONNECTED,
+            ).exclude(agency=request.user.agency).exists():
+                return Response(
+                    {
+                        "detail": (
+                            "This WhatsApp phone number is already connected to "
+                            "another Nexora agency."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            subscribe_whatsapp_business_account(
+                values["business_account_id"],
+                access_token,
+            )
+        except MetaAPIError as exc:
+            return Response(
+                {
+                    "detail": str(exc),
+                    "code": exc.code or "whatsapp_connection_failed",
+                },
+                status=exc.status_code or status.HTTP_502_BAD_GATEWAY,
+            )
+        except requests.RequestException:
+            return Response(
+                {"detail": "Meta could not be reached. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        token_expires_at = None
+        if token_data.get("expires_in"):
+            token_expires_at = timezone.now() + timezone.timedelta(
+                seconds=int(token_data["expires_in"])
+            )
+        account, _ = SocialAccount.objects.update_or_create(
+            agency=request.user.agency,
+            provider=SocialAccount.PROVIDER_META,
+            platform=SocialAccount.PLATFORM_WHATSAPP,
+            external_id=values["phone_number_id"],
+            defaults={
+                "name": phone.get("verified_name") or "WhatsApp Business",
+                "username": None,
+                "page_id": None,
+                "business_account_id": values["business_account_id"],
+                "phone_number_id": values["phone_number_id"],
+                "display_phone_number": phone.get("display_phone_number") or "",
+                "quality_rating": phone.get("quality_rating") or "",
+                "access_token": access_token,
+                "user_access_token": "",
+                "token_expires_at": token_expires_at,
+                "scopes": "whatsapp_business_management,whatsapp_business_messaging",
+                "status": SocialAccount.STATUS_CONNECTED,
+                "connected_by": request.user,
+                "webhook_subscription_status": "subscribed",
+                "webhook_subscribed_at": timezone.now(),
+                "webhook_error": "",
+            },
+        )
+        oauth_state.mark_used()
+        return Response(SocialAccountSerializer(account).data)
 
 
 class SocialAccountListView(generics.ListAPIView):

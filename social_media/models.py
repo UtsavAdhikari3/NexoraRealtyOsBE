@@ -163,12 +163,14 @@ class SocialAccount(models.Model):
 
     PLATFORM_FACEBOOK = "facebook"
     PLATFORM_INSTAGRAM = "instagram"
+    PLATFORM_WHATSAPP = "whatsapp"
     PLATFORM_TIKTOK = "tiktok"
     PLATFORM_LINKEDIN = "linkedin"
 
     PLATFORM_CHOICES = [
         (PLATFORM_FACEBOOK, "Facebook"),
         (PLATFORM_INSTAGRAM, "Instagram"),
+        (PLATFORM_WHATSAPP, "WhatsApp"),
         (PLATFORM_TIKTOK, "TikTok"),
         (PLATFORM_LINKEDIN, "LinkedIn"),
     ]
@@ -198,6 +200,12 @@ class SocialAccount(models.Model):
 
     # For Instagram accounts connected through a Facebook Page
     page_id = models.CharField(max_length=255, blank=True, null=True)
+
+    # WhatsApp Cloud API identifiers and public phone metadata.
+    business_account_id = models.CharField(max_length=255, blank=True, null=True)
+    phone_number_id = models.CharField(max_length=255, blank=True, null=True)
+    display_phone_number = models.CharField(max_length=50, blank=True)
+    quality_rating = models.CharField(max_length=30, blank=True)
 
     access_token = models.TextField()
     user_access_token = models.TextField(blank=True)
@@ -354,7 +362,13 @@ class SocialPublishResult(models.Model):
         on_delete=models.CASCADE,
         related_name="publish_results",
     )
-    platform = models.CharField(max_length=30, choices=SocialAccount.PLATFORM_CHOICES)
+    platform = models.CharField(
+        max_length=30,
+        choices=[
+            (SocialAccount.PLATFORM_FACEBOOK, "Facebook"),
+            (SocialAccount.PLATFORM_INSTAGRAM, "Instagram"),
+        ],
+    )
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,

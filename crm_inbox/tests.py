@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -64,6 +65,17 @@ class UnifiedInboxAPITestCase(APITestCase):
             name="Instagram Account",
             username="inboxrealty",
             access_token="page-token",
+        )
+        self.whatsapp = SocialAccount.objects.create(
+            agency=self.agency,
+            provider="meta",
+            platform="whatsapp",
+            external_id="phone-number-1",
+            business_account_id="waba-1",
+            phone_number_id="phone-number-1",
+            display_phone_number="+977 9812345678",
+            name="Inbox Realty WhatsApp",
+            access_token="whatsapp-token",
         )
 
     def signed_webhook(self, payload):
@@ -216,6 +228,131 @@ class UnifiedInboxAPITestCase(APITestCase):
         conversation = Conversation.objects.get()
         self.assertEqual(conversation.platform, "instagram")
         self.assertEqual(conversation.messages.get().text, "Price please")
+
+    def whatsapp_payload(self, *, message_id="wamid.inbound-1"):
+        return {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "waba-1",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {
+                            "display_phone_number": "+977 9812345678",
+                            "phone_number_id": "phone-number-1",
+                        },
+                        "contacts": [{
+                            "profile": {"name": "Sita Gurung"},
+                            "wa_id": "9779800000000",
+                        }],
+                        "messages": [{
+                            "from": "9779800000000",
+                            "id": message_id,
+                            "timestamp": str(int(timezone.now().timestamp())),
+                            "type": "text",
+                            "text": {"body": "Can I arrange a viewing?"},
+                        }],
+                    },
+                }],
+            }],
+        }
+
+    def test_whatsapp_message_creates_named_contact_and_phone_lead(self):
+        first = self.signed_webhook(self.whatsapp_payload())
+        second = self.signed_webhook(self.whatsapp_payload())
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        contact = SocialContact.objects.get(social_account=self.whatsapp)
+        conversation = Conversation.objects.get(social_account=self.whatsapp)
+        self.assertEqual(contact.display_name, "Sita Gurung")
+        self.assertEqual(conversation.platform, "whatsapp")
+        self.assertEqual(conversation.unread_count, 1)
+        self.assertEqual(conversation.messages.get().text, "Can I arrange a viewing?")
+        self.assertEqual(conversation.linked_lead.phone, "+9779800000000")
+        self.assertEqual(conversation.linked_lead.source, "whatsapp")
+
+        self.client.force_authenticate(user=self.owner)
+        inbox = self.client.get(reverse("inbox-conversation-list"))
+        whatsapp_conversation = next(
+            item for item in inbox.data if item["platform"] == "whatsapp"
+        )
+        self.assertEqual(whatsapp_conversation["contact"]["phone"], "+9779800000000")
+
+    @patch(
+        "crm_inbox.views.send_meta_text_message",
+        return_value={"message_id": "wamid.outbound-1"},
+    )
+    def test_whatsapp_reply_is_allowed_inside_service_window(self, send_mock):
+        self.signed_webhook(self.whatsapp_payload())
+        conversation = Conversation.objects.get(social_account=self.whatsapp)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            reverse("inbox-reply", kwargs={"conversation_id": conversation.id}),
+            {"text": "Yes, which day works for you?"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["provider_message_id"], "wamid.outbound-1")
+        send_mock.assert_called_once_with(
+            self.whatsapp,
+            "9779800000000",
+            "Yes, which day works for you?",
+        )
+
+    def test_whatsapp_reply_requires_template_after_service_window(self):
+        self.signed_webhook(self.whatsapp_payload())
+        conversation = Conversation.objects.get(social_account=self.whatsapp)
+        conversation.messages.update(
+            sent_at=timezone.now() - timezone.timedelta(hours=25)
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            reverse("inbox-reply", kwargs={"conversation_id": conversation.id}),
+            {"text": "Following up"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["code"], "whatsapp_service_window_closed")
+
+    def test_whatsapp_delivery_receipt_updates_outbound_message(self):
+        self.signed_webhook(self.whatsapp_payload())
+        conversation = Conversation.objects.get(social_account=self.whatsapp)
+        message = SocialMessage.objects.create(
+            conversation=conversation,
+            social_account=self.whatsapp,
+            provider_message_id="wamid.outbound-status",
+            direction=SocialMessage.DIRECTION_OUTBOUND,
+            message_type=SocialMessage.TYPE_TEXT,
+            text="Hello",
+            delivery_status=SocialMessage.STATUS_SENT,
+            sent_at=timezone.now(),
+        )
+        receipt = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "waba-1",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "metadata": {"phone_number_id": "phone-number-1"},
+                        "statuses": [{
+                            "id": "wamid.outbound-status",
+                            "status": "read",
+                            "timestamp": str(int(timezone.now().timestamp())),
+                            "recipient_id": "9779800000000",
+                        }],
+                    },
+                }],
+            }],
+        }
+        response = self.signed_webhook(receipt)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        message.refresh_from_db()
+        self.assertEqual(message.delivery_status, SocialMessage.STATUS_READ)
 
     @override_settings(SOCIAL_PROFILE_LOOKUP_ENABLED=True)
     @patch(

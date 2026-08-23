@@ -27,11 +27,23 @@ urlpatterns = [
     path("api/webhooks/stripe/", stripe_webhook, name="stripe-webhook"),
     path("api/dashboard/summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
     path("api/health/", HealthCheckView.as_view(), name="health-check"),
-
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
-    path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
 ]
+
+
+if settings.API_DOCS_ENABLED:
+    urlpatterns += [
+        path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+        path(
+            "api/docs/",
+            SpectacularSwaggerView.as_view(url_name="schema"),
+            name="swagger-ui",
+        ),
+        path(
+            "api/redoc/",
+            SpectacularRedocView.as_view(url_name="schema"),
+            name="redoc",
+        ),
+    ]
 
 
 if settings.DEBUG:
