@@ -308,3 +308,31 @@ class SocialPostMultiImageTestCase(APITestCase):
             page_access_token="page-token",
             container_id="carousel-parent",
         )
+
+    @patch(
+        "social_media.services.publishing.publish_instagram_images",
+        return_value=("instagram-parent", "instagram-media"),
+    )
+    @patch(
+        "social_media.services.publishing.publish_facebook_images",
+        return_value=({"id": "facebook-post"}, "facebook-photo-1"),
+    )
+    def test_same_five_image_post_can_publish_to_facebook_and_instagram(
+        self,
+        facebook_mock,
+        instagram_mock,
+    ):
+        post = self.create_post_with_media(count=5, account=self.facebook_account)
+        post.target_platforms = ["facebook", "instagram"]
+        post.save(update_fields=["target_platforms"])
+
+        publish_social_post(post, platforms=["facebook", "instagram"])
+
+        post.refresh_from_db()
+        self.assertEqual(post.status, SocialPost.STATUS_PUBLISHED)
+        self.assertEqual(len(facebook_mock.call_args.args[2]), 5)
+        instagram_mock.assert_called_once()
+        self.assertEqual(
+            set(post.publish_results.values_list("platform", flat=True)),
+            {"facebook", "instagram"},
+        )
