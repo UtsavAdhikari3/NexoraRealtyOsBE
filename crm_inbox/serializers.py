@@ -13,6 +13,7 @@ User = get_user_model()
 class SocialContactSerializer(serializers.ModelSerializer):
     display_label = serializers.SerializerMethodField()
     profile_available = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
 
     class Meta:
         model = SocialContact
@@ -26,6 +27,7 @@ class SocialContactSerializer(serializers.ModelSerializer):
             "profile_image_url",
             "profile_data",
             "profile_available",
+            "phone",
             "profile_synced_at",
             "linked_lead",
             "first_seen_at",
@@ -46,6 +48,11 @@ class SocialContactSerializer(serializers.ModelSerializer):
             or obj.username
             or obj.profile_image_url
         )
+
+    def get_phone(self, obj):
+        if obj.platform == "whatsapp" and obj.external_user_id.isdigit():
+            return f"+{obj.external_user_id}"
+        return ""
 
 
 class SocialMessageSerializer(serializers.ModelSerializer):

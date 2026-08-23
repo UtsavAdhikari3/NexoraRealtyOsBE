@@ -517,6 +517,13 @@ class MetaPageSelectionSerializer(serializers.Serializer):
         return list(dict.fromkeys(value))
 
 
+class WhatsAppConnectionCompleteSerializer(serializers.Serializer):
+    state = serializers.CharField(max_length=255)
+    code = serializers.CharField(max_length=4096)
+    business_account_id = serializers.CharField(max_length=255)
+    phone_number_id = serializers.CharField(max_length=255)
+
+
 class SocialConnectionSessionSerializer(serializers.ModelSerializer):
     pages = serializers.SerializerMethodField()
 
@@ -550,6 +557,10 @@ class SocialAccountSerializer(serializers.ModelSerializer):
             "name",
             "username",
             "page_id",
+            "business_account_id",
+            "phone_number_id",
+            "display_phone_number",
+            "quality_rating",
             "status",
             "webhook_subscription_status",
             "webhook_subscribed_at",

@@ -113,6 +113,8 @@ Cancellation requires a reason. Completing a visit records `completed_at` and mo
 | POST | `/api/social-posts/posts/{id}/publish/` | Publish to Facebook, Instagram, or both |
 | GET | `/api/social-posts/connections/meta/start/` | Start Meta OAuth |
 | GET | `/api/social-posts/connections/meta/callback/` | OAuth callback |
+| GET | `/api/social-posts/connections/whatsapp/start/` | Start WhatsApp Embedded Signup (owner/manager) |
+| POST | `/api/social-posts/connections/whatsapp/complete/` | Verify and save the selected WABA phone number |
 | GET | `/api/social-posts/accounts/` | Connected accounts |
 | POST | `/api/social-posts/accounts/{id}/disconnect/` | Disconnect account |
 
@@ -158,7 +160,7 @@ Asset types are `facebook_post`, `instagram_post`, `instagram_story`, `watermark
 
 ## Unified social inbox
 
-Meta sends Facebook Page and Instagram Business messaging events to `GET/POST /api/webhooks/meta/`. The GET request verifies the callback; POST requests require Meta's `X-Hub-Signature-256` signature. Payloads and messages are stored idempotently, so webhook retries do not duplicate conversations or messages.
+Meta sends Facebook Page, Instagram Business, and WhatsApp Business messaging events to `GET/POST /api/webhooks/meta/`. The GET request verifies the callback; POST requests require Meta's `X-Hub-Signature-256` signature. Payloads and messages are stored idempotently, so webhook retries do not duplicate conversations or messages.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -175,6 +177,8 @@ Meta sends Facebook Page and Instagram Business messaging events to `GET/POST /a
 Conversation list filters include `platform`, `status`, `assigned_agent`, `unread`, and `search`. Agency owners can access every conversation in their agency. Agents can access conversations assigned to them and unassigned conversations; an agent may claim an unassigned conversation but cannot assign it to another agent.
 
 Set `META_WEBHOOK_VERIFY_TOKEN` to a long random value and use that same value in the Meta dashboard. Configure the callback URL as `https://<public-backend-host>/api/webhooks/meta/`. Reconnect existing Meta accounts after deploying this feature so Nexora can request messaging permissions and subscribe the Page to webhook fields.
+
+WhatsApp uses Meta Embedded Signup and is deliberately separate from social-post publishing. Add the WhatsApp product and a Facebook Login for Business configuration to the same Meta app, set `META_WHATSAPP_LOGIN_CONFIG_ID`, request advanced access for `whatsapp_business_management` and `whatsapp_business_messaging`, and subscribe the app's webhook to the WhatsApp `messages` field. Nexora verifies that the selected phone belongs to the authorized WABA and subscribes the app to that WABA before storing the connection. Free-form CRM replies are accepted only for 24 hours after the latest inbound WhatsApp message; outside that window an approved WhatsApp message template is required.
 
 ## Operations, transactions, and customer portal
 

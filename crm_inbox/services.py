@@ -38,6 +38,13 @@ def timestamp_from_milliseconds(value):
         return timezone.now()
 
 
+def timestamp_from_seconds(value):
+    try:
+        return datetime.fromtimestamp(int(value), tz=datetime_timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return timezone.now()
+
+
 def find_receiving_account(object_type, external_id):
     queryset = SocialAccount.objects.filter(
         provider=SocialAccount.PROVIDER_META,
@@ -46,6 +53,11 @@ def find_receiving_account(object_type, external_id):
     if object_type == "instagram":
         return queryset.filter(
             platform=SocialAccount.PLATFORM_INSTAGRAM,
+            external_id=external_id,
+        ).first()
+    if object_type == "whatsapp_business_account":
+        return queryset.filter(
+            platform=SocialAccount.PLATFORM_WHATSAPP,
             external_id=external_id,
         ).first()
     return queryset.filter(
@@ -119,6 +131,8 @@ def contact_profile_is_stale(contact):
 
 def refresh_social_contact_profile(contact, force=False):
     """Enrich a social contact without ever blocking message ingestion on failure."""
+    if contact.platform == SocialAccount.PLATFORM_WHATSAPP:
+        return contact
     if not settings.SOCIAL_PROFILE_LOOKUP_ENABLED:
         return contact
     if not force and not contact_profile_is_stale(contact):
@@ -239,7 +253,12 @@ def ensure_automatic_social_lead(conversation, contact, referral=None):
             agency=conversation.agency,
             assigned_agent=conversation.assigned_agent,
             full_name=display_name,
-            phone="",
+            phone=(
+                f"+{contact.external_user_id}"
+                if conversation.platform == SocialAccount.PLATFORM_WHATSAPP
+                and contact.external_user_id.isdigit()
+                else ""
+            ),
             source=conversation.platform,
             status="new",
             custom_data=custom_data,
@@ -398,8 +417,190 @@ def ingest_messaging_event(account, event):
     return contact
 
 
+def whatsapp_message_text(message):
+    message_type = message.get("type")
+    if message_type == "text":
+        return (message.get("text") or {}).get("body", "")
+    if message_type == "button":
+        return (message.get("button") or {}).get("text", "")
+    if message_type == "interactive":
+        interactive = message.get("interactive") or {}
+        response = (
+            interactive.get("button_reply")
+            or interactive.get("list_reply")
+            or interactive.get("nfm_reply")
+            or {}
+        )
+        return response.get("title") or response.get("response_json") or ""
+    if message_type == "location":
+        location = message.get("location") or {}
+        label = location.get("name") or location.get("address") or "Shared location"
+        coordinates = ", ".join(
+            str(location.get(key)) for key in ("latitude", "longitude")
+            if location.get(key) is not None
+        )
+        return f"{label}{f' ({coordinates})' if coordinates else ''}"
+    media = message.get(message_type) or {}
+    return media.get("caption") or media.get("filename") or ""
+
+
+def normalize_whatsapp_attachments(message):
+    message_type = message.get("type")
+    if message_type not in {"image", "video", "audio", "document", "sticker"}:
+        return []
+    media = message.get(message_type) or {}
+    return [
+        {
+            "type": "file" if message_type == "document" else message_type,
+            "provider_media_id": media.get("id", ""),
+            "mime_type": media.get("mime_type", ""),
+            "sha256": media.get("sha256", ""),
+            "title": media.get("filename") or media.get("caption") or "",
+        }
+    ]
+
+
+def update_whatsapp_message_status(account, status_payload):
+    provider_message_id = status_payload.get("id")
+    if not provider_message_id:
+        return
+    provider_status = status_payload.get("status")
+    status_map = {
+        "sent": SocialMessage.STATUS_SENT,
+        "delivered": SocialMessage.STATUS_DELIVERED,
+        "read": SocialMessage.STATUS_READ,
+        "failed": SocialMessage.STATUS_FAILED,
+    }
+    update_values = {}
+    if provider_status in status_map:
+        update_values["delivery_status"] = status_map[provider_status]
+    errors = status_payload.get("errors") or []
+    if errors:
+        error = errors[0]
+        update_values["error_message"] = (
+            error.get("message") or error.get("title") or "WhatsApp delivery failed."
+        )[:2000]
+    if update_values:
+        SocialMessage.objects.filter(
+            social_account=account,
+            provider_message_id=provider_message_id,
+            direction=SocialMessage.DIRECTION_OUTBOUND,
+        ).update(**update_values)
+
+
+@transaction.atomic
+def ingest_whatsapp_message(account, message, contacts_by_id):
+    contact_external_id = str(message.get("from") or "")
+    provider_message_id = str(message.get("id") or "")
+    if not contact_external_id or not provider_message_id:
+        return None
+
+    contact_payload = contacts_by_id.get(contact_external_id) or {}
+    display_name = str((contact_payload.get("profile") or {}).get("name") or "").strip()
+    contact, _ = SocialContact.objects.get_or_create(
+        agency=account.agency,
+        social_account=account,
+        platform=account.platform,
+        external_user_id=contact_external_id,
+        defaults={"display_name": display_name},
+    )
+    if display_name and contact.display_name != display_name:
+        contact.display_name = display_name
+        contact.profile_lookup_error = ""
+        contact.save(update_fields=["display_name", "profile_lookup_error", "last_seen_at"])
+
+    conversation, _ = Conversation.objects.get_or_create(
+        agency=account.agency,
+        social_account=account,
+        contact=contact,
+        platform=account.platform,
+        external_conversation_id=contact_external_id,
+        defaults={"linked_lead": contact.linked_lead},
+    )
+    message_type = str(message.get("type") or "unsupported")
+    type_map = {
+        "text": SocialMessage.TYPE_TEXT,
+        "image": SocialMessage.TYPE_IMAGE,
+        "video": SocialMessage.TYPE_VIDEO,
+        "audio": SocialMessage.TYPE_AUDIO,
+        "document": SocialMessage.TYPE_FILE,
+        "sticker": SocialMessage.TYPE_STICKER,
+        "button": SocialMessage.TYPE_POSTBACK,
+        "interactive": SocialMessage.TYPE_POSTBACK,
+    }
+    text = whatsapp_message_text(message)
+    attachments = normalize_whatsapp_attachments(message)
+    sent_at = timestamp_from_seconds(message.get("timestamp"))
+    _, created = SocialMessage.objects.get_or_create(
+        social_account=account,
+        provider_message_id=provider_message_id,
+        defaults={
+            "conversation": conversation,
+            "direction": SocialMessage.DIRECTION_INBOUND,
+            "message_type": type_map.get(message_type, SocialMessage.TYPE_UNSUPPORTED),
+            "sender_external_id": contact_external_id,
+            "text": text,
+            "attachments": attachments,
+            "delivery_status": SocialMessage.STATUS_RECEIVED,
+            "sent_at": sent_at,
+        },
+    )
+    if not created:
+        return contact
+
+    preview = text or (
+        f"[{attachments[0].get('type', 'attachment').title()}]"
+        if attachments
+        else f"[{message_type.title()}]"
+    )
+    conversation.last_message_at = sent_at
+    if settings.SOCIAL_AUTO_CREATE_LEADS:
+        ensure_automatic_social_lead(conversation, contact)
+    Conversation.objects.filter(id=conversation.id).update(
+        unread_count=F("unread_count") + 1,
+        last_message_at=sent_at,
+        last_message_preview=preview[:255],
+        status=Conversation.STATUS_OPEN,
+    )
+    conversation.refresh_from_db(fields=["linked_lead"])
+    if conversation.linked_lead_id:
+        LeadInteraction.objects.create(
+            agency=conversation.agency,
+            lead=conversation.linked_lead,
+            interaction_type=SocialAccount.PLATFORM_WHATSAPP,
+            direction="inbound",
+            note=f"Inbound WhatsApp message: {preview}",
+        )
+        lead = conversation.linked_lead
+        lead.last_contacted_at = sent_at
+        lead.save(update_fields=["last_contacted_at", "updated_at"])
+    return contact
+
+
+def process_whatsapp_payload(payload):
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value") or {}
+            phone_number_id = str((value.get("metadata") or {}).get("phone_number_id") or "")
+            account = find_receiving_account("whatsapp_business_account", phone_number_id)
+            if not account:
+                continue
+            contacts_by_id = {
+                str(contact.get("wa_id")): contact
+                for contact in value.get("contacts", [])
+                if contact.get("wa_id")
+            }
+            for status_payload in value.get("statuses", []):
+                update_whatsapp_message_status(account, status_payload)
+            for message in value.get("messages", []):
+                ingest_whatsapp_message(account, message, contacts_by_id)
+
+
 def process_meta_payload(payload):
     object_type = payload.get("object", "")
+    if object_type == "whatsapp_business_account":
+        process_whatsapp_payload(payload)
+        return
     for entry in payload.get("entry", []):
         account = find_receiving_account(object_type, str(entry.get("id", "")))
         if not account:

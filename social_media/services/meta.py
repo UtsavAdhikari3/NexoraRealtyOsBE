@@ -180,6 +180,45 @@ def publish_facebook_feed_post(page_id, page_access_token, message):
     return response.json()
 
 
+def exchange_whatsapp_signup_code(code):
+    """Exchange an Embedded Signup authorization code for a business token."""
+    response = requests.get(
+        f"{graph_base_url()}/oauth/access_token",
+        params={
+            "client_id": settings.META_APP_ID,
+            "client_secret": settings.META_APP_SECRET,
+            "code": code,
+        },
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
+def get_whatsapp_phone_numbers(business_account_id, access_token):
+    response = requests.get(
+        f"{graph_base_url()}/{business_account_id}/phone_numbers",
+        params={
+            "fields": "id,verified_name,display_phone_number,quality_rating",
+            "limit": 100,
+        },
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json().get("data", [])
+
+
+def subscribe_whatsapp_business_account(business_account_id, access_token):
+    response = requests.post(
+        f"{graph_base_url()}/{business_account_id}/subscribed_apps",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=meta_request_timeout(),
+    )
+    raise_for_meta_error(response)
+    return response.json()
+
+
 def publish_facebook_photo_post(
     page_id,
     page_access_token,
@@ -501,6 +540,27 @@ def subscribe_page_to_webhooks(page_id, page_access_token):
 
 
 def send_meta_text_message(account, recipient_external_id, text):
+    if account.platform == account.PLATFORM_WHATSAPP:
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient_external_id,
+            "type": "text",
+            "text": {"preview_url": False, "body": text},
+        }
+        response = requests.post(
+            f"{graph_base_url()}/{account.phone_number_id or account.external_id}/messages",
+            json=payload,
+            headers={"Authorization": f"Bearer {account.access_token}"},
+            timeout=meta_request_timeout(),
+        )
+        raise_for_meta_error(response)
+        result = response.json()
+        messages = result.get("messages") or []
+        if messages and messages[0].get("id"):
+            result["message_id"] = messages[0]["id"]
+        return result
+
     payload = {
         "recipient": {"id": recipient_external_id},
         "message": {"text": text},

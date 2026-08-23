@@ -6,6 +6,8 @@ from .views import (
     MetaConnectionStartView,
     MetaConnectionCallbackView,
     MetaConnectionSessionView,
+    WhatsAppConnectionStartView,
+    WhatsAppConnectionCompleteView,
     SocialAccountListView,
     SocialAccountDisconnectView,
     SocialPostPublishView,
@@ -22,6 +24,16 @@ urlpatterns = [
         "connections/meta/sessions/<str:token>/",
         MetaConnectionSessionView.as_view(),
         name="meta-connection-session",
+    ),
+    path(
+        "connections/whatsapp/start/",
+        WhatsAppConnectionStartView.as_view(),
+        name="whatsapp-connection-start",
+    ),
+    path(
+        "connections/whatsapp/complete/",
+        WhatsAppConnectionCompleteView.as_view(),
+        name="whatsapp-connection-complete",
     ),
 
     path("accounts/", SocialAccountListView.as_view(), name="social-account-list"),
