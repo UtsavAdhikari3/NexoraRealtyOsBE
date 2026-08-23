@@ -1,11 +1,12 @@
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-import re
 from zoneinfo import ZoneInfo
 
 from bikram_sambat import date as bs_date
 from django.utils import timezone
+
+from .phone import is_valid_nepal_phone, normalize_nepal_phone
 
 
 NEPAL_TIMEZONE = ZoneInfo("Asia/Kathmandu")
@@ -204,32 +205,19 @@ def format_nepal_currency(value, *, language="en", nepali_digits=False, suffix="
     return f"रु. {rendered} {unit_ne}{suffix}" if language == "ne" else f"NPR {rendered} {unit_en}{suffix}"
 
 
-def normalize_nepal_phone(value):
-    raw_value = to_latin_digits((value or "").strip())
-    digits = re.sub(r"\D", "", raw_value)
-    if digits.startswith("00977"):
-        digits = digits[5:]
-    elif digits.startswith("977") and len(digits) > 10:
-        digits = digits[3:]
-    if len(digits) == 10 and digits.startswith("9"):
-        return digits
-    if raw_value.startswith("+") and digits:
-        return f"+{digits}"
-    return digits or raw_value
-
-
 def format_nepal_phone(value, *, international=True, nepali_digits=False):
+    valid = is_valid_nepal_phone(value)
     normalized = normalize_nepal_phone(value)
     digits = normalized.lstrip("+")
     if digits.startswith("977"):
         digits = digits[3:]
-    if len(digits) == 10 and digits.startswith("9"):
+    if len(digits) == 10 and digits.startswith(("97", "98")):
         rendered = f"{digits[:3]} {digits[3:6]} {digits[6:]}"
-    elif len(digits) in {8, 9} and digits.startswith("0"):
-        rendered = f"{digits[:2]}-{digits[2:]}"
+    elif len(digits) == 10 and digits.startswith("01"):
+        rendered = f"{digits[:2]}-{digits[2:6]} {digits[6:]}"
     else:
         rendered = normalized
-    if international and rendered and not rendered.startswith("+") and digits == normalized:
+    if international and valid and rendered and not rendered.startswith("+"):
         rendered = f"+977 {rendered}"
     return to_nepali_digits(rendered) if nepali_digits else rendered
 

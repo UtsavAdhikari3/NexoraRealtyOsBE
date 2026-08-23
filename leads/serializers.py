@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from agencies.serializer_fields import NepalPhoneField
+
 from .models import (
     Lead, LeadPropertyInterest, LeadInteraction, LeadStatusHistory,
     LeadAutomationSettings, LeadAssignmentRule, LeadDuplicateFlag,
@@ -27,6 +29,7 @@ class LeadStatusHistorySerializer(serializers.ModelSerializer):
 
 
 class LeadSerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField()
     status = serializers.CharField(max_length=40, required=False)
     source_display = serializers.CharField(source="get_source_display", read_only=True)
     status_display = serializers.SerializerMethodField()

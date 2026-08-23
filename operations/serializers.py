@@ -10,6 +10,7 @@ from rest_framework import serializers
 
 from users.models import AgencyUser
 from agencies.models import Agency
+from agencies.serializer_fields import NepalPhoneField
 from .models import (
     Appointment, AppointmentAvailability, AuditLog, Contact, CustomerProfile,
     CustomFieldDefinition, Deal, Document, Invitation, Lease, Notification,
@@ -39,6 +40,7 @@ class AgencyValidationMixin:
 
 
 class ContactSerializer(AgencyValidationMixin, serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True)
     custom_module = "contact"
     assigned_to_name = serializers.CharField(source="assigned_to.full_name", read_only=True)
     relation_fields = ("lead", "assigned_to")
@@ -50,6 +52,7 @@ class ContactSerializer(AgencyValidationMixin, serializers.ModelSerializer):
 
 
 class OwnerSerializer(AgencyValidationMixin, serializers.ModelSerializer):
+    phone = NepalPhoneField()
     custom_module = "owner"
     property_titles = serializers.SerializerMethodField()
     relation_fields = ("contact",)
@@ -214,6 +217,7 @@ class InvitationAcceptSerializer(serializers.Serializer):
 
 
 class TeamMemberSerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
     class Meta:
         model = AgencyUser
         fields = ["id", "full_name", "email", "phone", "role", "is_active", "created_at"]
@@ -230,6 +234,7 @@ class TeamMemberSerializer(serializers.ModelSerializer):
 
 
 class PlatformAgencySerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
     users_count = serializers.IntegerField(source="users.count", read_only=True)
     properties_count = serializers.IntegerField(source="properties.count", read_only=True)
 
@@ -328,6 +333,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
 
 class CustomerProfileSerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True)
     class Meta:
         model = CustomerProfile
         exclude = ["agency", "access_token", "password_hash"]
@@ -335,6 +341,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
 
 class CustomerRegistrationSerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True)
     password = serializers.CharField(write_only=True)
 
     class Meta:
@@ -413,6 +420,7 @@ class SavedSearchSerializer(serializers.ModelSerializer):
 
 
 class PublicSubmissionSerializer(AgencyValidationMixin, serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True)
     property_title = serializers.CharField(source="property.title", read_only=True)
     agent_name = serializers.CharField(source="agent.full_name", read_only=True)
     lead_name = serializers.CharField(source="lead.full_name", read_only=True)
@@ -543,6 +551,7 @@ class AppointmentAvailabilitySerializer(AgencyValidationMixin, serializers.Model
 
 
 class AppointmentSerializer(AgencyValidationMixin, serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True)
     agent_name = serializers.CharField(source="agent.full_name", read_only=True)
     property_title = serializers.CharField(source="property.title", read_only=True)
     relation_fields = ("agent", "property", "customer")

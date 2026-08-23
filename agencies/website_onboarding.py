@@ -7,9 +7,10 @@ from django.core.validators import URLValidator, validate_email
 from django.utils import timezone
 from rest_framework import serializers
 
+from .phone import NEPAL_PHONE_ERROR, is_valid_nepal_phone, normalize_nepal_phone
+
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-PHONE_RE = re.compile(r"^[+0-9()\-\s]{7,30}$")
 MAX_FAQS = 12
 MAX_TESTIMONIALS = 8
 MAX_STATISTICS = 6
@@ -303,8 +304,10 @@ def validate_website_config(value):
         except DjangoValidationError:
             raise serializers.ValidationError({"public_email": "Enter a valid email address."})
     for field in ["public_phone", "whatsapp_number", "viber_number"]:
-        if cleaned[field] and not PHONE_RE.fullmatch(cleaned[field]):
-            raise serializers.ValidationError({field: "Enter a valid phone number."})
+        if cleaned[field]:
+            if not is_valid_nepal_phone(cleaned[field]):
+                raise serializers.ValidationError({field: NEPAL_PHONE_ERROR})
+            cleaned[field] = normalize_nepal_phone(cleaned[field])
     for field in ["facebook_url", "instagram_url", "linkedin_url", "youtube_url", "tiktok_url"]:
         cleaned[field] = _clean_url(merged[field], field)
     for field in ["hero_primary_cta_url", "hero_secondary_cta_url", "contact_cta_url"]:

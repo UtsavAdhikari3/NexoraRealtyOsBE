@@ -5,7 +5,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from datetime import timedelta
 
-from leads.services import normalize_phone
+from agencies.serializer_fields import NepalPhoneField
 
 from .models import Property, PropertyEvent, PropertyMedia
 from .area import conversion_payload, price_per_area
@@ -416,7 +416,7 @@ class PublicPropertySerializer(serializers.ModelSerializer):
 
 class PublicPropertyInquirySerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
-    phone = serializers.CharField(max_length=30)
+    phone = NepalPhoneField()
     email = serializers.EmailField(required=False, allow_blank=True)
     message = serializers.CharField(required=False, allow_blank=True)
     utm_source = serializers.CharField(max_length=100, required=False, allow_blank=True)
@@ -426,12 +426,6 @@ class PublicPropertyInquirySerializer(serializers.Serializer):
 
     def validate_full_name(self, value):
         return value.strip()
-
-    def validate_phone(self, value):
-        normalized = normalize_phone(value)
-        if len(normalized.lstrip("+")) < 7:
-            raise serializers.ValidationError("Enter a valid phone number.")
-        return normalized
 
     def validate_email(self, value):
         return value.lower().strip()

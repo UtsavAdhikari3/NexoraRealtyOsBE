@@ -4,6 +4,7 @@ from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from agencies.models import Agency
+from agencies.serializer_fields import NepalPhoneField
 from agencies.website_onboarding import default_website_config
 from agencies.subdomains import (
     RESERVED_SUBDOMAINS,
@@ -141,6 +142,7 @@ class LoginResponseSerializer(serializers.Serializer):
     agency = serializers.DictField()
 
 class AgentSerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
     password = serializers.CharField(
         write_only=True,
         required=False,
@@ -194,6 +196,7 @@ class AgentSerializer(serializers.ModelSerializer):
 
 
 class AgentSelfProfileSerializer(AgentProfileMetricsMixin, serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
     profile_image_url = serializers.SerializerMethodField()
     profile_completed = serializers.BooleanField(
         source="agent_profile_completed",
@@ -271,6 +274,7 @@ class AgentSelfProfileSerializer(AgentProfileMetricsMixin, serializers.ModelSeri
 class AgentCreateSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
+    phone = NepalPhoneField(required=False, allow_blank=True)
     password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_email(self, value):
@@ -299,6 +303,7 @@ class AgentCreateSerializer(serializers.Serializer):
             email=validated_data["email"],
             password=validated_data["password"],
             full_name=validated_data["full_name"],
+            phone=validated_data.get("phone", ""),
             agency=request.user.agency,
             role="agent",
         )

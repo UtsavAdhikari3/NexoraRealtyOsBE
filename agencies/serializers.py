@@ -17,6 +17,7 @@ from .website_onboarding import (
 from .website_urls import agency_website_url
 from .template_capabilities import get_template_capabilities
 from .domains import normalize_domain, routing_record, verification_record
+from .serializer_fields import NepalPhoneField
 
 class TestMarkAgencyPaidSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -67,6 +68,9 @@ class AgencyDomainSerializer(serializers.ModelSerializer):
         return routing_record(obj)
 
 class AgencySerializer(serializers.ModelSerializer):
+    phone = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
+    whatsapp_number = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
+    viber_number = NepalPhoneField(required=False, allow_blank=True, allow_null=True)
     resolved_message_templates = serializers.SerializerMethodField()
     address_display = serializers.SerializerMethodField()
     phone_display = serializers.SerializerMethodField()

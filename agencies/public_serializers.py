@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.conf import settings
 
 from .models import Agency
-from leads.services import normalize_phone
+from .serializer_fields import NepalPhoneField
 from .localization import format_nepal_address, format_nepal_phone
 from .website_onboarding import default_website_config
 from .website_urls import agency_website_url
@@ -275,18 +275,12 @@ class PublicAgentSerializer(serializers.ModelSerializer):
 
 class PublicAgencyContactSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
-    phone = serializers.CharField(max_length=30)
+    phone = NepalPhoneField()
     email = serializers.EmailField(required=False, allow_blank=True)
     message = serializers.CharField(required=False, allow_blank=True)
 
     def validate_full_name(self, value):
         return value.strip()
-
-    def validate_phone(self, value):
-        normalized = normalize_phone(value)
-        if len(normalized.lstrip("+")) < 7:
-            raise serializers.ValidationError("Enter a valid phone number.")
-        return normalized
 
     def validate_email(self, value):
         return value.lower().strip()
